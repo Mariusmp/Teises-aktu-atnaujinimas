@@ -1,0 +1,13 @@
+# Virtuali Python aplinka
+ta_update/
+
+# Prisijungimo duomenys ir sesijos žetonai
+credentials.json
+token.json
+
+# Python podėlis (cache)
+__pycache__/
+*.pyc
+
+# Playwright naršyklių podėlis
+/ms-playwright/
