@@ -113,7 +113,7 @@ def convert_doc_to_pdf_via_drive(url, drive_service):
         downloader = MediaIoBaseDownload(pdf_content, request)
         done = False
         while not done:
-            status, done = downloader.next_chunk()
+            _, done = downloader.next_chunk()
         pdf_content.seek(0)
         
         drive_service.files().delete(fileId=temp_file_id, supportsAllDrives=True).execute()
@@ -168,7 +168,7 @@ def download_file_content_from_drive(service, file_id):
         file_content = io.BytesIO()
         downloader = MediaIoBaseDownload(file_content, request)
         done = False
-        while not done: status, done = downloader.next_chunk()
+        while not done: _, done = downloader.next_chunk()
         file_content.seek(0)
         return file_content
     except Exception as e:
