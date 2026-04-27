@@ -145,6 +145,33 @@ def search_file_in_drive_folder(service, folder_id, file_name):
         print(f"Klaida ieškant failo Drive: {e}")
         return None
 
+def get_all_files_in_drive_folder(service, folder_id):
+    """Gauna visus failus iš nurodyto aplanko vienu kartu."""
+    files_dict = {}
+    page_token = None
+    query = f"'{folder_id}' in parents and trashed=false"
+    try:
+        while True:
+            results = service.files().list(
+                q=query,
+                spaces='drive',
+                fields='nextPageToken, files(id, name)',
+                supportsAllDrives=True,
+                pageToken=page_token
+            ).execute()
+
+            for f in results.get('files', []):
+                if f['name'] not in files_dict:
+                    files_dict[f['name']] = f
+
+            page_token = results.get('nextPageToken', None)
+            if not page_token:
+                break
+        return files_dict
+    except Exception as e:
+        print(f"Klaida gaunant visus failus iš Drive: {e}")
+        return {}
+
 def upload_file_to_drive(service, folder_id, file_name, file_content_bytes, mime_type='application/pdf'):
     file_metadata = {'name': file_name, 'parents': [folder_id]}
     media = MediaIoBaseUpload(file_content_bytes, mimetype=mime_type, resumable=False)
@@ -207,6 +234,9 @@ def main():
 
     drive_service = get_drive_service()
 
+    # Pre-fetch all files to avoid N+1 API calls
+    drive_files_cache = get_all_files_in_drive_folder(drive_service, DRIVE_FOLDER_ID)
+
     for row in sheets_data:
         if not row or len(row) < 2: continue
 
@@ -234,7 +264,7 @@ def main():
             print(f"Nepavyko gauti '{file_name}' turinio. Failas praleidžiamas.")
             continue
 
-        existing_file = search_file_in_drive_folder(drive_service, DRIVE_FOLDER_ID, file_name)
+        existing_file = drive_files_cache.get(file_name)
 
         if existing_file:
             old_file_content_bytes = download_file_content_from_drive(drive_service, existing_file['id'])
