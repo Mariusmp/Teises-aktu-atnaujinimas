@@ -95,7 +95,8 @@ class TestTAUpdate(unittest.TestCase):
         mock_get.assert_called_once_with(
             url,
             stream=True,
-            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'},
+            timeout=20
         )
         mock_print.assert_called_once_with(f"Klaida atsisiunčiant failą iš URL {url}: {error_message}")
 
