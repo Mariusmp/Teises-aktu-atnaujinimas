@@ -1,3 +1,31 @@
+
+import queue
+import threading
+import json
+
+class WebLogger:
+    def __init__(self):
+        self.q = queue.Queue()
+        self.results = []
+
+    def log(self, message):
+        self.q.put({"type": "log", "message": message})
+
+    def progress(self, current, total):
+        self.q.put({"type": "progress", "current": current, "total": total})
+
+    def add_result(self, result):
+        self.results.append(result)
+        self.q.put({"type": "result", "data": result})
+
+logger = WebLogger()
+
+def web_print(*args, **kwargs):
+    msg = " ".join(map(str, args))
+    print(msg) # still print to console
+    if hasattr(logger, 'log'):
+        logger.log(msg)
+
 import os.path
 import io
 import requests
@@ -42,7 +70,7 @@ def get_sheets_data():
         result = sheet.values().get(spreadsheetId=SPREADSHEET_ID, range=RANGE_NAME).execute()
         return result.get('values', [])
     except Exception as e:
-        print(f"Klaida gaunant duomenis iš Google Sheets: {e}")
+        web_print(f"\nKlaida gaunant duomenis iš Google Sheets: {e}")
         return []
 
 def get_drive_service():
@@ -53,7 +81,7 @@ def get_drive_service():
 
 def convert_html_to_pdf_bytes_playwright(url):
     """Konvertuoja HTML puslapį į PDF naudojant Playwright."""
-    print(f"Bandoma konvertuoti HTML puslapį į PDF su Playwright: {url}")
+    web_print(f"\nBandoma konvertuoti HTML puslapį į PDF su Playwright: {url}")
     pdf_bytes = None
     with sync_playwright() as p:
         try:
@@ -62,7 +90,7 @@ def convert_html_to_pdf_bytes_playwright(url):
             # Bandoma imituoti tikrą vartotoją
             page.set_extra_http_headers({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"})
             page.goto(url, wait_until='networkidle', timeout=60000)
-            
+
             page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
             page.wait_for_load_state('networkidle')
             time.sleep(2)
@@ -70,36 +98,36 @@ def convert_html_to_pdf_bytes_playwright(url):
             pdf_bytes = page.pdf(format='A4', print_background=True)
             browser.close()
         except Exception as e:
-            print(f"Klaida konvertuojant HTML su Playwright: {e}")
+            web_print(f"\nKlaida konvertuojant HTML su Playwright: {e}")
             return None
     return io.BytesIO(pdf_bytes) if pdf_bytes else None
 
 def convert_doc_to_pdf_via_drive(url, drive_service):
     """Konvertuoja ODT arba DOCX failą į PDF naudojant Google Drive API."""
-    print(f"Bandoma konvertuoti dokumentą per Google Drive: {url}")
+    web_print(f"\nBandoma konvertuoti dokumentą per Google Drive: {url}")
     temp_file_id = None
     source_mimetype = ''
-    
+
     url_lower = url.lower()
     if url_lower.endswith('.odt') or '/format/oo3_odt/' in url_lower:
         source_mimetype = 'application/vnd.oasis.opendocument.text'
     elif url_lower.endswith('.docx'):
         source_mimetype = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
     else:
-        print("Neatpažintas dokumento formatas konvertavimui per Drive.")
+        web_print("Neatpažintas dokumento formatas konvertavimui per Drive.")
         return None
 
     try:
         doc_content = download_file_from_url_to_bytes(url)
         if not doc_content: return None
-        
+
         file_metadata = {
             'name': 'temp_conversion_doc',
             'parents': [DRIVE_FOLDER_ID],
             'mimeType': 'application/vnd.google-apps.document'
         }
         media = MediaIoBaseUpload(doc_content, mimetype=source_mimetype, resumable=True)
-        
+
         google_doc_file = drive_service.files().create(
             body=file_metadata,
             media_body=media,
@@ -107,20 +135,20 @@ def convert_doc_to_pdf_via_drive(url, drive_service):
             supportsAllDrives=True
         ).execute()
         temp_file_id = google_doc_file.get('id')
-        
+
         request = drive_service.files().export_media(fileId=temp_file_id, mimeType='application/pdf')
         pdf_content = io.BytesIO()
         downloader = MediaIoBaseDownload(pdf_content, request)
         done = False
         while not done:
-            _, done = downloader.next_chunk()
+            status, done = downloader.next_chunk()
         pdf_content.seek(0)
-        
+
         drive_service.files().delete(fileId=temp_file_id, supportsAllDrives=True).execute()
         return pdf_content
-        
+
     except Exception as e:
-        print(f"Klaida konvertuojant dokumentą per Drive: {e}")
+        web_print(f"\nKlaida konvertuojant dokumentą per Drive: {e}")
         if temp_file_id:
              drive_service.files().delete(fileId=temp_file_id, supportsAllDrives=True).execute()
         return None
@@ -129,72 +157,38 @@ def convert_doc_to_pdf_via_drive(url, drive_service):
 def download_file_from_url_to_bytes(url):
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
     try:
-        # Pridedamas timeout, kad būtų išvengta pakibimo (Security fix)
-        response = requests.get(url, stream=True, headers=headers, timeout=20)
+        response = requests.get(url, stream=True, headers=headers)
         response.raise_for_status()
         return io.BytesIO(response.content)
     except requests.exceptions.RequestException as e:
-        print(f"Klaida atsisiunčiant failą iš URL {url}: {e}")
+        web_print(f"\nKlaida atsisiunčiant failą iš URL {url}: {e}")
         return None
 
-def escape_drive_query_string(s):
-    """Escapes backslashes and single quotes for Google Drive API query strings."""
-    return s.replace('\\', '\\\\').replace("'", "\\'")
-
 def search_file_in_drive_folder(service, folder_id, file_name):
-    safe_file_name = escape_drive_query_string(file_name)
-    safe_folder_id = escape_drive_query_string(folder_id)
-    query = f"name='{safe_file_name}' and '{safe_folder_id}' in parents and trashed=false"
+    query = f"name='{file_name}' and '{folder_id}' in parents and trashed=false"
     try:
         results = service.files().list(q=query, spaces='drive', fields='files(id, name)', supportsAllDrives=True).execute()
         return results.get('files', [])[0] if results.get('files', []) else None
     except Exception as e:
-        print(f"Klaida ieškant failo Drive: {e}")
+        web_print(f"\nKlaida ieškant failo Drive: {e}")
         return None
-
-def get_all_files_in_drive_folder(service, folder_id):
-    """Gauna visus failus iš nurodyto aplanko vienu kartu."""
-    files_dict = {}
-    page_token = None
-    query = f"'{folder_id}' in parents and trashed=false"
-    try:
-        while True:
-            results = service.files().list(
-                q=query,
-                spaces='drive',
-                fields='nextPageToken, files(id, name)',
-                supportsAllDrives=True,
-                pageToken=page_token
-            ).execute()
-
-            for f in results.get('files', []):
-                if f['name'] not in files_dict:
-                    files_dict[f['name']] = f
-
-            page_token = results.get('nextPageToken', None)
-            if not page_token:
-                break
-        return files_dict
-    except Exception as e:
-        print(f"Klaida gaunant visus failus iš Drive: {e}")
-        return {}
 
 def upload_file_to_drive(service, folder_id, file_name, file_content_bytes, mime_type='application/pdf'):
     file_metadata = {'name': file_name, 'parents': [folder_id]}
     media = MediaIoBaseUpload(file_content_bytes, mimetype=mime_type, resumable=False)
     try:
         file = service.files().create(body=file_metadata, media_body=media, fields='id', supportsAllDrives=True).execute()
-        print(f"Failas '{file_name}' sėkmingai įkeltas. ID: {file.get('id')}")
+        web_print(f"\nFailas '{file_name}' sėkmingai įkeltas. ID: {file.get('id')}")
     except Exception as e:
-        print(f"Klaida įkeliant failą '{file_name}': {e}")
+        web_print(f"\nKlaida įkeliant failą '{file_name}': {e}")
 
 def update_file_in_drive(service, file_id, new_file_content_bytes, mime_type='application/pdf'):
     media = MediaIoBaseUpload(new_file_content_bytes, mimetype=mime_type, resumable=True)
     try:
         service.files().update(fileId=file_id, media_body=media, supportsAllDrives=True).execute()
-        print(f"Failas su ID '{file_id}' sėkmingai atnaujintas.")
+        web_print(f"\nFailas su ID '{file_id}' sėkmingai atnaujintas.")
     except Exception as e:
-        print(f"Klaida atnaujinant failą su ID '{file_id}': {e}")
+        web_print(f"\nKlaida atnaujinant failą su ID '{file_id}': {e}")
 
 def download_file_content_from_drive(service, file_id):
     try:
@@ -202,11 +196,11 @@ def download_file_content_from_drive(service, file_id):
         file_content = io.BytesIO()
         downloader = MediaIoBaseDownload(file_content, request)
         done = False
-        while not done: _, done = downloader.next_chunk()
+        while not done: status, done = downloader.next_chunk()
         file_content.seek(0)
         return file_content
     except Exception as e:
-        print(f"Klaida atsisiunčiant failo turinį iš Drive (ID: {file_id}): {e}")
+        web_print(f"\nKlaida atsisiunčiant failo turinį iš Drive (ID: {file_id}): {e}")
         return None
 
 def extract_text_from_pdf(pdf_bytes_io):
@@ -215,63 +209,98 @@ def extract_text_from_pdf(pdf_bytes_io):
         text = "".join(page.extract_text() or "" for page in reader.pages)
         return text
     except Exception as e:
-        print(f"Klaida išskiriant tekstą iš PDF: {e}")
+        web_print(f"\nKlaida išskiriant tekstą iš PDF: {e}")
         return None
+
 
 def compare_texts_and_report_diff(old_text, new_text, file_name):
     if not old_text or not new_text:
-        print(f"\n--- Pakeitimų ataskaita failui: {file_name} ---")
-        print("Vienas iš failų neturi tekstinio turinio, palyginimas negalimas.")
-        print("------------------------------------------")
-        return
-        
+        web_print(f"\n--- Pakeitimų ataskaita failui: {file_name} ---")
+        web_print("Vienas iš failų neturi tekstinio turinio, palyginimas negalimas.")
+        web_print("------------------------------------------")
+        return None
+
     dmp = diff_match_patch()
     diffs = dmp.diff_main(old_text, new_text)
     dmp.diff_cleanupSemantic(diffs)
-    has_changes = any(op != 0 for op, _ in diffs)
-    print(f"\n--- Pakeitimų ataskaita failui: {file_name} ---")
-    if has_changes: print("Rasti pakeitimai.")
-    else: print("Pakeitimų nerasta.")
-    print("------------------------------------------")
+    has_changes = any(op != 0 for op, text in diffs)
+
+    # Generate HTML diff
+    html_diff = dmp.diff_prettyHtml(diffs)
+
+    web_print(f"\n--- Pakeitimų ataskaita failui: {file_name} ---")
+    if has_changes: web_print("Rasti pakeitimai.")
+    else: web_print("Pakeitimų nerasta.")
+    web_print("------------------------------------------")
+    return {"has_changes": has_changes, "html_diff": html_diff}
 
 # --- Pagrindinė logika ---
+
+
+
 def main():
+    try:
+        _main_logic()
+    except Exception as e:
+        import traceback
+        err_msg = f"Klaida vykdant pagrindinę logiką: {e}\n{traceback.format_exc()}"
+        web_print(err_msg)
+        logger.add_result({
+            "file_name": "Klaida",
+            "status": "error",
+            "message": str(e),
+            "link": None,
+            "diff": None
+        })
+    finally:
+        logger.q.put({"type": "done"})
+
+def _main_logic():
+
     sheets_data = get_sheets_data()
-    if not sheets_data: return
+    if not sheets_data:
+        web_print("Nepavyko gauti duomenų iš Sheets.")
+        return
 
     drive_service = get_drive_service()
 
-    # Pre-fetch all files to avoid N+1 API calls
-    drive_files_cache = get_all_files_in_drive_folder(drive_service, DRIVE_FOLDER_ID)
+    # Filter valid rows
+    valid_rows = [row for row in sheets_data if row and len(row) >= 2 and row[0].strip() and row[1].strip()]
+    total_files = len(valid_rows)
+    logger.progress(0, total_files)
 
-    for row in sheets_data:
-        if not row or len(row) < 2: continue
-
+    for i, row in enumerate(valid_rows):
         file_name = row[0].strip() + ".pdf"
         original_url = row[1].strip()
         url_lower = original_url.lower()
+        web_print(f"\n--- Apdirbamas failas: '{file_name}' ---")
 
-        if not file_name or not original_url: continue
-
-        print(f"\n--- Apdirbamas failas: '{file_name}' ---")
-        
         new_file_content_bytes = None
-        # Patobulinta atpažinimo logika
         if url_lower.endswith('.pdf') or '/format/iso_pdf/' in url_lower or '/txt/pdf/' in url_lower:
-            print("Aptikta tiesioginė PDF nuoroda.")
+            web_print("Aptikta tiesioginė PDF nuoroda.")
             new_file_content_bytes = download_file_from_url_to_bytes(original_url)
         elif url_lower.endswith(('.odt', '.docx')) or '/format/oo3_odt/' in url_lower:
-            print("Aptiktas ODT/DOCX dokumentas. Konvertuojama per Google Drive.")
+            web_print("Aptiktas ODT/DOCX dokumentas. Konvertuojama per Google Drive.")
             new_file_content_bytes = convert_doc_to_pdf_via_drive(original_url, drive_service)
         else:
-            print("Neaiški nuoroda, manoma, kad tai HTML. Konvertuojama su Playwright.")
+            web_print("Neaiški nuoroda, manoma, kad tai HTML. Konvertuojama su Playwright.")
             new_file_content_bytes = convert_html_to_pdf_bytes_playwright(original_url)
-        
+
         if not new_file_content_bytes:
-            print(f"Nepavyko gauti '{file_name}' turinio. Failas praleidžiamas.")
+            web_print(f"\nNepavyko gauti '{file_name}' turinio. Failas praleidžiamas.")
+            logger.add_result({
+                "file_name": file_name,
+                "status": "error",
+                "message": "Nepavyko gauti turinio",
+                "link": original_url,
+                "diff": None
+            })
+            logger.progress(i + 1, total_files)
             continue
 
-        existing_file = drive_files_cache.get(file_name)
+        existing_file = search_file_in_drive_folder(drive_service, DRIVE_FOLDER_ID, file_name)
+
+        diff_info = None
 
         if existing_file:
             old_file_content_bytes = download_file_content_from_drive(drive_service, existing_file['id'])
@@ -279,15 +308,40 @@ def main():
                 old_text = extract_text_from_pdf(old_file_content_bytes)
                 new_text = extract_text_from_pdf(new_file_content_bytes)
                 new_file_content_bytes.seek(0)
-                
-                compare_texts_and_report_diff(old_text, new_text, file_name)
-                
-                print(f"Atnaujinamas failas '{file_name}'...")
-                update_file_in_drive(drive_service, existing_file['id'], new_file_content_bytes)
-        else:
-            print(f"Failas '{file_name}' nerastas Drive. Įkeliama nauja versija.")
-            upload_file_to_drive(drive_service, DRIVE_FOLDER_ID, file_name, new_file_content_bytes)
 
+                diff_info = compare_texts_and_report_diff(old_text, new_text, file_name)
+
+                web_print(f"\nAtnaujinamas failas '{file_name}'...")
+                update_file_in_drive(drive_service, existing_file['id'], new_file_content_bytes)
+
+                logger.add_result({
+                    "file_name": file_name,
+                    "status": "updated",
+                    "link": f"https://drive.google.com/file/d/{existing_file['id']}/view",
+                    "diff": diff_info,
+                    "original_url": original_url
+                })
+        else:
+            web_print(f"\nFailas '{file_name}' nerastas Drive. Įkeliama nauja versija.")
+            upload_file_to_drive(drive_service, DRIVE_FOLDER_ID, file_name, new_file_content_bytes)
+            # Find the file id again to provide a link
+            existing_file = search_file_in_drive_folder(drive_service, DRIVE_FOLDER_ID, file_name)
+            link = f"https://drive.google.com/file/d/{existing_file['id']}/view" if existing_file else None
+            logger.add_result({
+                "file_name": file_name,
+                "status": "new",
+                "link": link,
+                "diff": None,
+                "original_url": original_url
+            })
+
+        logger.progress(i + 1, total_files)
+
+
+
+def run_update_thread():
+    thread = threading.Thread(target=main)
+    thread.start()
 
 if __name__ == '__main__':
     main()
