@@ -136,8 +136,14 @@ def download_file_from_url_to_bytes(url):
         print(f"Klaida atsisiunčiant failą iš URL {url}: {e}")
         return None
 
+def escape_drive_query_string(s):
+    """Escapes backslashes and single quotes for Google Drive API query strings."""
+    return s.replace('\\', '\\\\').replace("'", "\\'")
+
 def search_file_in_drive_folder(service, folder_id, file_name):
-    query = f"name='{file_name}' and '{folder_id}' in parents and trashed=false"
+    safe_file_name = escape_drive_query_string(file_name)
+    safe_folder_id = escape_drive_query_string(folder_id)
+    query = f"name='{safe_file_name}' and '{safe_folder_id}' in parents and trashed=false"
     try:
         results = service.files().list(q=query, spaces='drive', fields='files(id, name)', supportsAllDrives=True).execute()
         return results.get('files', [])[0] if results.get('files', []) else None
