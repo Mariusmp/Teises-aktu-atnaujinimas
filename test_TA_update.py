@@ -3,8 +3,15 @@ import unittest
 from unittest.mock import MagicMock, patch
 import io
 
-# Mock dependencies before importing TA_update (imame iš main šakos, nes čia sąrašas pilnesnis)
-sys.modules['requests'] = MagicMock()
+# Sukuriame specialią klasę requests klaidoms testuoti (iš naujos šakos)
+class MockRequestException(Exception):
+    pass
+
+requests_mock = MagicMock()
+requests_mock.exceptions.RequestException = MockRequestException
+sys.modules['requests'] = requests_mock
+
+# Kiti moduliai, kuriuos reikia "apgauti" (iš main šakos)
 sys.modules['google'] = MagicMock()
 sys.modules['google.auth'] = MagicMock()
 sys.modules['google.auth.transport'] = MagicMock()
@@ -23,7 +30,10 @@ sys.modules['playwright.sync_api'] = MagicMock()
 
 import TA_update
 
-# Saugumo testai (iš tavo šakos)
+# Priskiriame klaidą pačiam moduliui
+TA_update.requests.exceptions.RequestException = MockRequestException
+
+# Saugumo testai
 class TestTAUpdateSecurity(unittest.TestCase):
 
     def test_escape_drive_query_string(self):
@@ -65,8 +75,31 @@ class TestTAUpdateSecurity(unittest.TestCase):
         actual_query = mock_files.list.call_args[1]['q']
         self.assertEqual(actual_query, expected_query)
 
-# Playwright PDF konvertavimo testai (iš main šakos)
+# Pagrindiniai testai
 class TestTAUpdate(unittest.TestCase):
+
+    # Failų atsisiuntimo klaidos testas (iš naujos šakos)
+    @patch('TA_update.requests.get')
+    @patch('builtins.print')
+    def test_download_file_from_url_to_bytes_exception(self, mock_print, mock_get):
+        # Arrange
+        url = "http://example.com/test.pdf"
+        error_message = "Connection refused"
+        mock_get.side_effect = MockRequestException(error_message)
+
+        # Act
+        result = TA_update.download_file_from_url_to_bytes(url)
+
+        # Assert
+        self.assertIsNone(result)
+        mock_get.assert_called_once_with(
+            url,
+            stream=True,
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        )
+        mock_print.assert_called_once_with(f"Klaida atsisiunčiant failą iš URL {url}: {error_message}")
+
+    # Playwright PDF konvertavimo testai (iš main šakos)
     @patch('TA_update.sync_playwright')
     @patch('TA_update.time.sleep')
     def test_convert_html_to_pdf_bytes_playwright_success(self, mock_sleep, mock_sync_playwright):
