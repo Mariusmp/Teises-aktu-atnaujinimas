@@ -222,7 +222,7 @@ def compare_texts_and_report_diff(old_text, new_text, file_name):
     dmp = diff_match_patch()
     diffs = dmp.diff_main(old_text, new_text)
     dmp.diff_cleanupSemantic(diffs)
-    has_changes = any(op != 0 for op, text in diffs)
+    has_changes = any(op != 0 for op, _ in diffs)
     print(f"\n--- Pakeitimų ataskaita failui: {file_name} ---")
     if has_changes: print("Rasti pakeitimai.")
     else: print("Pakeitimų nerasta.")
