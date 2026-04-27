@@ -129,7 +129,8 @@ def convert_doc_to_pdf_via_drive(url, drive_service):
 def download_file_from_url_to_bytes(url):
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
     try:
-        response = requests.get(url, stream=True, headers=headers)
+        # Pridedamas timeout, kad būtų išvengta pakibimo (Security fix)
+        response = requests.get(url, stream=True, headers=headers, timeout=20)
         response.raise_for_status()
         return io.BytesIO(response.content)
     except requests.exceptions.RequestException as e:
