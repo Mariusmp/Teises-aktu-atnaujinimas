@@ -79,27 +79,27 @@ def get_drive_service():
 
 # --- Atnaujintos konvertavimo funkcijos ---
 
-def convert_html_to_pdf_bytes_playwright(url):
+def convert_html_to_pdf_bytes_playwright(url, browser):
     """Konvertuoja HTML puslapį į PDF naudojant Playwright."""
     web_print(f"\nBandoma konvertuoti HTML puslapį į PDF su Playwright: {url}")
     pdf_bytes = None
-    with sync_playwright() as p:
-        try:
-            browser = p.chromium.launch()
-            page = browser.new_page()
-            # Bandoma imituoti tikrą vartotoją
-            page.set_extra_http_headers({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"})
-            page.goto(url, wait_until='networkidle', timeout=60000)
+    try:
+        page = browser.new_page()
+        # Bandoma imituoti tikrą vartotoją
+        page.set_extra_http_headers({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"})
+        page.goto(url, wait_until='networkidle', timeout=60000)
 
-            page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
-            page.wait_for_load_state('networkidle')
-            time.sleep(2)
+        page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
+        page.wait_for_load_state('networkidle')
+        time.sleep(2)
 
-            pdf_bytes = page.pdf(format='A4', print_background=True)
-            browser.close()
-        except Exception as e:
-            web_print(f"\nKlaida konvertuojant HTML su Playwright: {e}")
-            return None
+        pdf_bytes = page.pdf(format='A4', print_background=True)
+    except Exception as e:
+        web_print(f"\nKlaida konvertuojant HTML su Playwright: {e}")
+        return None
+    finally:
+        if 'page' in locals():
+            page.close()
     return io.BytesIO(pdf_bytes) if pdf_bytes else None
 
 def convert_doc_to_pdf_via_drive(url, drive_service):
@@ -157,21 +157,56 @@ def convert_doc_to_pdf_via_drive(url, drive_service):
 def download_file_from_url_to_bytes(url):
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
     try:
-        response = requests.get(url, stream=True, headers=headers)
+        response = requests.get(url, stream=True, headers=headers, timeout=20)
         response.raise_for_status()
         return io.BytesIO(response.content)
     except requests.exceptions.RequestException as e:
         web_print(f"\nKlaida atsisiunčiant failą iš URL {url}: {e}")
         return None
 
+
+def escape_drive_query_string(s):
+    """Escapes backslashes and single quotes for Google Drive API query strings."""
+    return s.replace('\\', '\\\\').replace("'", "\\'")
+
 def search_file_in_drive_folder(service, folder_id, file_name):
-    query = f"name='{file_name}' and '{folder_id}' in parents and trashed=false"
+    safe_file_name = escape_drive_query_string(file_name)
+    safe_folder_id = escape_drive_query_string(folder_id)
+    query = f"name='{safe_file_name}' and '{safe_folder_id}' in parents and trashed=false"
     try:
         results = service.files().list(q=query, spaces='drive', fields='files(id, name)', supportsAllDrives=True).execute()
         return results.get('files', [])[0] if results.get('files', []) else None
     except Exception as e:
         web_print(f"\nKlaida ieškant failo Drive: {e}")
         return None
+
+
+def get_all_files_in_drive_folder(service, folder_id):
+    """Gauna visus failus iš nurodyto aplanko vienu kartu."""
+    files_dict = {}
+    page_token = None
+    query = f"'{folder_id}' in parents and trashed=false"
+    try:
+        while True:
+            results = service.files().list(
+                q=query,
+                spaces='drive',
+                fields='nextPageToken, files(id, name)',
+                supportsAllDrives=True,
+                pageToken=page_token
+            ).execute()
+
+            for f in results.get('files', []):
+                if f['name'] not in files_dict:
+                    files_dict[f['name']] = f
+
+            page_token = results.get('nextPageToken', None)
+            if not page_token:
+                break
+        return files_dict
+    except Exception as e:
+        web_print(f"\nKlaida gaunant visus failus iš Drive: {e}")
+        return {}
 
 def upload_file_to_drive(service, folder_id, file_name, file_content_bytes, mime_type='application/pdf'):
     file_metadata = {'name': file_name, 'parents': [folder_id]}
@@ -264,79 +299,86 @@ def _main_logic():
 
     drive_service = get_drive_service()
 
+    # Pre-fetch all files to avoid N+1 API calls
+    drive_files_cache = get_all_files_in_drive_folder(drive_service, DRIVE_FOLDER_ID)
+
     # Filter valid rows
     valid_rows = [row for row in sheets_data if row and len(row) >= 2 and row[0].strip() and row[1].strip()]
     total_files = len(valid_rows)
     logger.progress(0, total_files)
 
-    for i, row in enumerate(valid_rows):
-        file_name = row[0].strip() + ".pdf"
-        original_url = row[1].strip()
-        url_lower = original_url.lower()
-        web_print(f"\n--- Apdirbamas failas: '{file_name}' ---")
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        for i, row in enumerate(valid_rows):
+            file_name = row[0].strip() + ".pdf"
+            original_url = row[1].strip()
+            url_lower = original_url.lower()
+            web_print(f"\n--- Apdirbamas failas: '{file_name}' ---")
 
-        new_file_content_bytes = None
-        if url_lower.endswith('.pdf') or '/format/iso_pdf/' in url_lower or '/txt/pdf/' in url_lower:
-            web_print("Aptikta tiesioginė PDF nuoroda.")
-            new_file_content_bytes = download_file_from_url_to_bytes(original_url)
-        elif url_lower.endswith(('.odt', '.docx')) or '/format/oo3_odt/' in url_lower:
-            web_print("Aptiktas ODT/DOCX dokumentas. Konvertuojama per Google Drive.")
-            new_file_content_bytes = convert_doc_to_pdf_via_drive(original_url, drive_service)
-        else:
-            web_print("Neaiški nuoroda, manoma, kad tai HTML. Konvertuojama su Playwright.")
-            new_file_content_bytes = convert_html_to_pdf_bytes_playwright(original_url)
+            new_file_content_bytes = None
+            if url_lower.endswith('.pdf') or '/format/iso_pdf/' in url_lower or '/txt/pdf/' in url_lower:
+                web_print("Aptikta tiesioginė PDF nuoroda.")
+                new_file_content_bytes = download_file_from_url_to_bytes(original_url)
+            elif url_lower.endswith(('.odt', '.docx')) or '/format/oo3_odt/' in url_lower:
+                web_print("Aptiktas ODT/DOCX dokumentas. Konvertuojama per Google Drive.")
+                new_file_content_bytes = convert_doc_to_pdf_via_drive(original_url, drive_service)
+            else:
+                web_print("Neaiški nuoroda, manoma, kad tai HTML. Konvertuojama su Playwright.")
+                new_file_content_bytes = convert_html_to_pdf_bytes_playwright(original_url, browser)
 
-        if not new_file_content_bytes:
-            web_print(f"\nNepavyko gauti '{file_name}' turinio. Failas praleidžiamas.")
-            logger.add_result({
-                "file_name": file_name,
-                "status": "error",
-                "message": "Nepavyko gauti turinio",
-                "link": original_url,
-                "diff": None
-            })
-            logger.progress(i + 1, total_files)
-            continue
-
-        existing_file = search_file_in_drive_folder(drive_service, DRIVE_FOLDER_ID, file_name)
-
-        diff_info = None
-
-        if existing_file:
-            old_file_content_bytes = download_file_content_from_drive(drive_service, existing_file['id'])
-            if old_file_content_bytes:
-                old_text = extract_text_from_pdf(old_file_content_bytes)
-                new_text = extract_text_from_pdf(new_file_content_bytes)
-                new_file_content_bytes.seek(0)
-
-                diff_info = compare_texts_and_report_diff(old_text, new_text, file_name)
-
-                web_print(f"\nAtnaujinamas failas '{file_name}'...")
-                update_file_in_drive(drive_service, existing_file['id'], new_file_content_bytes)
-
+            if not new_file_content_bytes:
+                web_print(f"\nNepavyko gauti '{file_name}' turinio. Failas praleidžiamas.")
                 logger.add_result({
                     "file_name": file_name,
-                    "status": "updated",
-                    "link": f"https://drive.google.com/file/d/{existing_file['id']}/view",
-                    "diff": diff_info,
+                    "status": "error",
+                    "message": "Nepavyko gauti turinio",
+                    "link": original_url,
+                    "diff": None
+                })
+                logger.progress(i + 1, total_files)
+                continue
+
+            existing_file = drive_files_cache.get(file_name)
+
+            diff_info = None
+
+            if existing_file:
+                old_file_content_bytes = download_file_content_from_drive(drive_service, existing_file['id'])
+                if old_file_content_bytes:
+                    old_text = extract_text_from_pdf(old_file_content_bytes)
+                    new_text = extract_text_from_pdf(new_file_content_bytes)
+                    new_file_content_bytes.seek(0)
+
+                    diff_info = compare_texts_and_report_diff(old_text, new_text, file_name)
+
+                    web_print(f"\nAtnaujinamas failas '{file_name}'...")
+                    update_file_in_drive(drive_service, existing_file['id'], new_file_content_bytes)
+
+                    logger.add_result({
+                        "file_name": file_name,
+                        "status": "updated",
+                        "link": f"https://drive.google.com/file/d/{existing_file['id']}/view",
+                        "diff": diff_info,
+                        "original_url": original_url
+                    })
+            else:
+                web_print(f"\nFailas '{file_name}' nerastas Drive. Įkeliama nauja versija.")
+                upload_file_to_drive(drive_service, DRIVE_FOLDER_ID, file_name, new_file_content_bytes)
+                # Find the file id again to provide a link
+                existing_file = search_file_in_drive_folder(drive_service, DRIVE_FOLDER_ID, file_name)
+                link = f"https://drive.google.com/file/d/{existing_file['id']}/view" if existing_file else None
+                logger.add_result({
+                    "file_name": file_name,
+                    "status": "new",
+                    "link": link,
+                    "diff": None,
                     "original_url": original_url
                 })
-        else:
-            web_print(f"\nFailas '{file_name}' nerastas Drive. Įkeliama nauja versija.")
-            upload_file_to_drive(drive_service, DRIVE_FOLDER_ID, file_name, new_file_content_bytes)
-            # Find the file id again to provide a link
-            existing_file = search_file_in_drive_folder(drive_service, DRIVE_FOLDER_ID, file_name)
-            link = f"https://drive.google.com/file/d/{existing_file['id']}/view" if existing_file else None
-            logger.add_result({
-                "file_name": file_name,
-                "status": "new",
-                "link": link,
-                "diff": None,
-                "original_url": original_url
-            })
 
-        logger.progress(i + 1, total_files)
+            logger.progress(i + 1, total_files)
 
+
+        browser.close()
 
 
 def run_update_thread():
