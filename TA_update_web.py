@@ -43,9 +43,15 @@ from playwright.sync_api import sync_playwright
 # --- Konfigūracija ---
 SCOPES = ['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/spreadsheets.readonly']
 CREDENTIALS_FILE = 'credentials.json'
-SPREADSHEET_ID = '1n1I8lfPnm0nI46g2K2nrGwl_t1j9QXOR3XD9gM9z2z8'
-RANGE_NAME = 'Sheet1!A:B'
-DRIVE_FOLDER_ID = '1G17TuD-rFgjpt4odXhs7P1L_SQ0c-cXq'
+SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
+if not SPREADSHEET_ID:
+    raise ValueError("Missing required environment variable: SPREADSHEET_ID")
+RANGE_NAME = os.getenv("RANGE_NAME")
+if not RANGE_NAME:
+    raise ValueError("Missing required environment variable: RANGE_NAME")
+DRIVE_FOLDER_ID = os.getenv("DRIVE_FOLDER_ID")
+if not DRIVE_FOLDER_ID:
+    raise ValueError("Missing required environment variable: DRIVE_FOLDER_ID")
 
 # --- Autentifikacijos ir bazinės funkcijos (nepakitusios) ---
 def authenticate_google_api():
