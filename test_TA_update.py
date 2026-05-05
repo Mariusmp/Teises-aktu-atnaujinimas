@@ -27,6 +27,7 @@ sys.modules['PyPDF2'] = MagicMock()
 sys.modules['diff_match_patch'] = MagicMock()
 sys.modules['playwright'] = MagicMock()
 sys.modules['playwright.sync_api'] = MagicMock()
+sys.modules['google_auth'] = MagicMock()
 
 import TA_update
 
