@@ -15,8 +15,12 @@ from google_auth import authenticate_google_api
 
 # --- Konfigūracija ---
 SPREADSHEET_ID = os.getenv('SPREADSHEET_ID')
-RANGE_NAME = 'Sheet1!A:B'
+if not SPREADSHEET_ID:
+    raise ValueError('Missing required environment variable: SPREADSHEET_ID')
+RANGE_NAME = os.getenv('RANGE_NAME', 'Sheet1!A:B')
 DRIVE_FOLDER_ID = os.getenv('DRIVE_FOLDER_ID')
+if not DRIVE_FOLDER_ID:
+    raise ValueError('Missing required environment variable: DRIVE_FOLDER_ID')
 
 # --- Autentifikacijos ir bazinės funkcijos (nepakitusios) ---
 def get_sheets_data():
