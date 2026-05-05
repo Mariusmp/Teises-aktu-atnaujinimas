@@ -26,6 +26,7 @@ def web_print(*args, **kwargs):
     if hasattr(logger, 'log'):
         logger.log(msg)
 
+import os
 import os.path
 import io
 import requests
