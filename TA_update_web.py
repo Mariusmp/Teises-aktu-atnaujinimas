@@ -39,7 +39,6 @@ from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload, MediaIoBa
 from PyPDF2 import PdfReader
 from diff_match_patch import diff_match_patch
 from playwright.sync_api import sync_playwright
-from google_auth import authenticate_google_api
 
 # --- Konfigūracija ---
 SCOPES = ['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/spreadsheets.readonly']
@@ -52,20 +51,22 @@ if not SPREADSHEET_ID:
     raise ValueError("Missing environment variable: SPREADSHEET_ID")
 if not DRIVE_FOLDER_ID:
     raise ValueError("Missing environment variable: DRIVE_FOLDER_ID")
-SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
-if not SPREADSHEET_ID:
-    raise ValueError("Missing required environment variable: SPREADSHEET_ID")
-RANGE_NAME = os.getenv("RANGE_NAME")
-if not RANGE_NAME:
-    raise ValueError("Missing required environment variable: RANGE_NAME")
-DRIVE_FOLDER_ID = os.getenv("DRIVE_FOLDER_ID")
-if not DRIVE_FOLDER_ID:
-    raise ValueError("Missing required environment variable: DRIVE_FOLDER_ID")
-SPREADSHEET_ID = os.getenv('SPREADSHEET_ID')
-RANGE_NAME = 'Sheet1!A:B'
-DRIVE_FOLDER_ID = os.getenv('DRIVE_FOLDER_ID')
 
 # --- Autentifikacijos ir bazinės funkcijos (nepakitusios) ---
+def authenticate_google_api():
+    creds = None
+    if os.path.exists('token.json'):
+        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
+            creds = flow.run_local_server(port=0)
+        with open('token.json', 'w') as token:
+            token.write(creds.to_json())
+    return creds
+
 def get_sheets_data():
     creds = authenticate_google_api()
     try:
