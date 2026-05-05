@@ -11,7 +11,8 @@ mock_modules = [
     'PyPDF2',
     'diff_match_patch',
     'playwright.sync_api',
-    'requests'
+    'requests',
+    'google_auth'
 ]
 
 for module_name in mock_modules:
