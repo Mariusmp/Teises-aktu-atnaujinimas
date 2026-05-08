@@ -165,22 +165,6 @@ def download_file_from_url_to_bytes(url):
         return None
 
 
-def escape_drive_query_string(s):
-    """Escapes backslashes and single quotes for Google Drive API query strings."""
-    return s.replace('\\', '\\\\').replace("'", "\\'")
-
-def search_file_in_drive_folder(service, folder_id, file_name):
-    safe_file_name = escape_drive_query_string(file_name)
-    safe_folder_id = escape_drive_query_string(folder_id)
-    query = f"name='{safe_file_name}' and '{safe_folder_id}' in parents and trashed=false"
-    try:
-        results = service.files().list(q=query, spaces='drive', fields='files(id, name)', supportsAllDrives=True).execute()
-        return results.get('files', [])[0] if results.get('files', []) else None
-    except Exception as e:
-        web_print(f"\nKlaida ieškant failo Drive: {e}")
-        return None
-
-
 def get_all_files_in_drive_folder(service, folder_id):
     """Gauna visus failus iš nurodyto aplanko vienu kartu."""
     files_dict = {}
@@ -214,8 +198,10 @@ def upload_file_to_drive(service, folder_id, file_name, file_content_bytes, mime
     try:
         file = service.files().create(body=file_metadata, media_body=media, fields='id', supportsAllDrives=True).execute()
         web_print(f"\nFailas '{file_name}' sėkmingai įkeltas. ID: {file.get('id')}")
+        return file.get('id')
     except Exception as e:
         web_print(f"\nKlaida įkeliant failą '{file_name}': {e}")
+        return None
 
 def update_file_in_drive(service, file_id, new_file_content_bytes, mime_type='application/pdf'):
     media = MediaIoBaseUpload(new_file_content_bytes, mimetype=mime_type, resumable=True)
@@ -363,10 +349,8 @@ def _main_logic():
                     })
             else:
                 web_print(f"\nFailas '{file_name}' nerastas Drive. Įkeliama nauja versija.")
-                upload_file_to_drive(drive_service, DRIVE_FOLDER_ID, file_name, new_file_content_bytes)
-                # Find the file id again to provide a link
-                existing_file = search_file_in_drive_folder(drive_service, DRIVE_FOLDER_ID, file_name)
-                link = f"https://drive.google.com/file/d/{existing_file['id']}/view" if existing_file else None
+                new_file_id = upload_file_to_drive(drive_service, DRIVE_FOLDER_ID, file_name, new_file_content_bytes)
+                link = f"https://drive.google.com/file/d/{new_file_id}/view" if new_file_id else None
                 logger.add_result({
                     "file_name": file_name,
                     "status": "new",
