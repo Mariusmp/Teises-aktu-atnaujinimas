@@ -39,29 +39,37 @@ from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload, MediaIoBa
 from PyPDF2 import PdfReader
 from diff_match_patch import diff_match_patch
 from playwright.sync_api import sync_playwright
+from google_auth import authenticate_google_api
 
 # --- Konfigūracija ---
 SCOPES = ['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/spreadsheets.readonly']
 CREDENTIALS_FILE = 'credentials.json'
-SPREADSHEET_ID = '1n1I8lfPnm0nI46g2K2nrGwl_t1j9QXOR3XD9gM9z2z8'
+SPREADSHEET_ID = os.getenv('SPREADSHEET_ID')
 RANGE_NAME = 'Sheet1!A:B'
-DRIVE_FOLDER_ID = '1G17TuD-rFgjpt4odXhs7P1L_SQ0c-cXq'
+DRIVE_FOLDER_ID = os.getenv('DRIVE_FOLDER_ID')
+
+if not SPREADSHEET_ID:
+    raise ValueError("Missing environment variable: SPREADSHEET_ID")
+if not DRIVE_FOLDER_ID:
+    raise ValueError("Missing environment variable: DRIVE_FOLDER_ID")
+SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
+if not SPREADSHEET_ID:
+    raise ValueError("Missing required environment variable: SPREADSHEET_ID")
+RANGE_NAME = os.getenv("RANGE_NAME")
+if not RANGE_NAME:
+    raise ValueError("Missing required environment variable: RANGE_NAME")
+DRIVE_FOLDER_ID = os.getenv("DRIVE_FOLDER_ID")
+if not DRIVE_FOLDER_ID:
+    raise ValueError("Missing required environment variable: DRIVE_FOLDER_ID")
+SPREADSHEET_ID = os.getenv('SPREADSHEET_ID')
+if not SPREADSHEET_ID:
+    raise ValueError('Missing required environment variable: SPREADSHEET_ID')
+RANGE_NAME = os.getenv('RANGE_NAME', 'Sheet1!A:B')
+DRIVE_FOLDER_ID = os.getenv('DRIVE_FOLDER_ID')
+if not DRIVE_FOLDER_ID:
+    raise ValueError('Missing required environment variable: DRIVE_FOLDER_ID')
 
 # --- Autentifikacijos ir bazinės funkcijos (nepakitusios) ---
-def authenticate_google_api():
-    creds = None
-    if os.path.exists('token.json'):
-        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
-            creds = flow.run_local_server(port=0)
-        with open('token.json', 'w') as token:
-            token.write(creds.to_json())
-    return creds
-
 def get_sheets_data():
     creds = authenticate_google_api()
     try:
@@ -165,22 +173,6 @@ def download_file_from_url_to_bytes(url):
         return None
 
 
-def escape_drive_query_string(s):
-    """Escapes backslashes and single quotes for Google Drive API query strings."""
-    return s.replace('\\', '\\\\').replace("'", "\\'")
-
-def search_file_in_drive_folder(service, folder_id, file_name):
-    safe_file_name = escape_drive_query_string(file_name)
-    safe_folder_id = escape_drive_query_string(folder_id)
-    query = f"name='{safe_file_name}' and '{safe_folder_id}' in parents and trashed=false"
-    try:
-        results = service.files().list(q=query, spaces='drive', fields='files(id, name)', supportsAllDrives=True).execute()
-        return results.get('files', [])[0] if results.get('files', []) else None
-    except Exception as e:
-        web_print(f"\nKlaida ieškant failo Drive: {e}")
-        return None
-
-
 def get_all_files_in_drive_folder(service, folder_id):
     """Gauna visus failus iš nurodyto aplanko vienu kartu."""
     files_dict = {}
@@ -214,8 +206,10 @@ def upload_file_to_drive(service, folder_id, file_name, file_content_bytes, mime
     try:
         file = service.files().create(body=file_metadata, media_body=media, fields='id', supportsAllDrives=True).execute()
         web_print(f"\nFailas '{file_name}' sėkmingai įkeltas. ID: {file.get('id')}")
+        return file.get('id')
     except Exception as e:
         web_print(f"\nKlaida įkeliant failą '{file_name}': {e}")
+        return None
 
 def update_file_in_drive(service, file_id, new_file_content_bytes, mime_type='application/pdf'):
     media = MediaIoBaseUpload(new_file_content_bytes, mimetype=mime_type, resumable=True)
@@ -363,10 +357,8 @@ def _main_logic():
                     })
             else:
                 web_print(f"\nFailas '{file_name}' nerastas Drive. Įkeliama nauja versija.")
-                upload_file_to_drive(drive_service, DRIVE_FOLDER_ID, file_name, new_file_content_bytes)
-                # Find the file id again to provide a link
-                existing_file = search_file_in_drive_folder(drive_service, DRIVE_FOLDER_ID, file_name)
-                link = f"https://drive.google.com/file/d/{existing_file['id']}/view" if existing_file else None
+                new_file_id = upload_file_to_drive(drive_service, DRIVE_FOLDER_ID, file_name, new_file_content_bytes)
+                link = f"https://drive.google.com/file/d/{new_file_id}/view" if new_file_id else None
                 logger.add_result({
                     "file_name": file_name,
                     "status": "new",
