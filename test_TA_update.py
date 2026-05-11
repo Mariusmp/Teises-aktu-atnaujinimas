@@ -27,6 +27,7 @@ sys.modules['PyPDF2'] = MagicMock()
 sys.modules['diff_match_patch'] = MagicMock()
 sys.modules['playwright'] = MagicMock()
 sys.modules['playwright.sync_api'] = MagicMock()
+sys.modules['google_auth'] = MagicMock()
 
 import TA_update
 
@@ -159,6 +160,19 @@ class TestTAUpdate(unittest.TestCase):
 
         # Assert
         self.assertIsNone(result)
+
+    @patch.dict('os.environ', clear=True)
+    def test_missing_environment_variables(self):
+        import importlib
+with patch.dict('os.environ', clear=True):
+            with self.assertRaises(ValueError) as context:
+                importlib.reload(TA_update)
+            self.assertEqual(str(context.exception), "Missing required environment variable: SPREADSHEET_ID")
+
+        with patch.dict('os.environ', {'SPREADSHEET_ID': 'mock'}, clear=True):
+            with self.assertRaises(ValueError) as context:
+                importlib.reload(TA_update)
+            self.assertEqual(str(context.exception), "Missing required environment variable: DRIVE_FOLDER_ID")
 
 if __name__ == '__main__':
     unittest.main()
