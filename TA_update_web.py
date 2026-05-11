@@ -29,7 +29,6 @@ def web_print(*args, **kwargs):
 import os.path
 import io
 import requests
-import time
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -91,7 +90,6 @@ def convert_html_to_pdf_bytes_playwright(url, browser):
 
         page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
         page.wait_for_load_state('networkidle')
-        time.sleep(2)
 
         pdf_bytes = page.pdf(format='A4', print_background=True)
     except Exception as e:
