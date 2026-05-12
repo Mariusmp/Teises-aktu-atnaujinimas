@@ -1,11 +1,8 @@
-import os.path
+import os
 import io
 import requests
 import time
 
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 from PyPDF2 import PdfReader
@@ -16,7 +13,7 @@ from google_auth import authenticate_google_api
 # --- Konfigūracija ---
 SCOPES = ['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/spreadsheets.readonly']
 CREDENTIALS_FILE = 'credentials.json'
-
+# --- Konfigūracija ---
 SPREADSHEET_ID = os.getenv('SPREADSHEET_ID')
 if not SPREADSHEET_ID:
     raise ValueError("Missing required environment variable: SPREADSHEET_ID")
@@ -28,6 +25,7 @@ if not RANGE_NAME:
 DRIVE_FOLDER_ID = os.getenv('DRIVE_FOLDER_ID')
 if not DRIVE_FOLDER_ID:
     raise ValueError("Missing required environment variable: DRIVE_FOLDER_ID")
+ main
 
 # --- Autentifikacijos ir bazinės funkcijos (nepakitusios) ---
 def get_sheets_data():
