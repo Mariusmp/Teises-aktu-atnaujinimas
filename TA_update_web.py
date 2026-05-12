@@ -1,7 +1,6 @@
 
 import queue
 import threading
-import json
 
 class WebLogger:
     def __init__(self):
@@ -26,7 +25,7 @@ def web_print(*args, **kwargs):
     if hasattr(logger, 'log'):
         logger.log(msg)
 
-import os.path
+import os
 import io
 import requests
 import time
@@ -42,29 +41,15 @@ from google_auth import authenticate_google_api
 SCOPES = ['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/spreadsheets.readonly']
 CREDENTIALS_FILE = 'credentials.json'
 SPREADSHEET_ID = os.getenv('SPREADSHEET_ID')
-RANGE_NAME = 'Sheet1!A:B'
+RANGE_NAME = os.getenv('RANGE_NAME', 'Sheet1!A:B')
 DRIVE_FOLDER_ID = os.getenv('DRIVE_FOLDER_ID')
 
 if not SPREADSHEET_ID:
     raise ValueError("Missing environment variable: SPREADSHEET_ID")
+if not RANGE_NAME:
+    raise ValueError("Missing environment variable: RANGE_NAME")
 if not DRIVE_FOLDER_ID:
     raise ValueError("Missing environment variable: DRIVE_FOLDER_ID")
-SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
-if not SPREADSHEET_ID:
-    raise ValueError("Missing required environment variable: SPREADSHEET_ID")
-RANGE_NAME = os.getenv("RANGE_NAME")
-if not RANGE_NAME:
-    raise ValueError("Missing required environment variable: RANGE_NAME")
-DRIVE_FOLDER_ID = os.getenv("DRIVE_FOLDER_ID")
-if not DRIVE_FOLDER_ID:
-    raise ValueError("Missing required environment variable: DRIVE_FOLDER_ID")
-SPREADSHEET_ID = os.getenv('SPREADSHEET_ID')
-if not SPREADSHEET_ID:
-    raise ValueError('Missing required environment variable: SPREADSHEET_ID')
-RANGE_NAME = os.getenv('RANGE_NAME', 'Sheet1!A:B')
-DRIVE_FOLDER_ID = os.getenv('DRIVE_FOLDER_ID')
-if not DRIVE_FOLDER_ID:
-    raise ValueError('Missing required environment variable: DRIVE_FOLDER_ID')
 
 # --- Autentifikacijos ir bazinės funkcijos (nepakitusios) ---
 def get_sheets_data():
