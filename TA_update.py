@@ -20,26 +20,15 @@ SPREADSHEET_ID = os.getenv('SPREADSHEET_ID')
 RANGE_NAME = 'Sheet1!A:B'
 DRIVE_FOLDER_ID = os.getenv('DRIVE_FOLDER_ID')
 
-if not SPREADSHEET_ID:
-    raise ValueError("Missing environment variable: SPREADSHEET_ID")
-if not DRIVE_FOLDER_ID:
-    raise ValueError("Missing environment variable: DRIVE_FOLDER_ID")
-SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
-if not SPREADSHEET_ID:
-    raise ValueError("Missing required environment variable: SPREADSHEET_ID")
-RANGE_NAME = os.getenv("RANGE_NAME")
-if not RANGE_NAME:
-    raise ValueError("Missing required environment variable: RANGE_NAME")
-DRIVE_FOLDER_ID = os.getenv("DRIVE_FOLDER_ID")
-if not DRIVE_FOLDER_ID:
-    raise ValueError("Missing required environment variable: DRIVE_FOLDER_ID")
 SPREADSHEET_ID = os.getenv('SPREADSHEET_ID')
 if not SPREADSHEET_ID:
-    raise ValueError('Missing required environment variable: SPREADSHEET_ID')
+    raise ValueError("Missing required environment variable: SPREADSHEET_ID")
+
 RANGE_NAME = os.getenv('RANGE_NAME', 'Sheet1!A:B')
+
 DRIVE_FOLDER_ID = os.getenv('DRIVE_FOLDER_ID')
 if not DRIVE_FOLDER_ID:
-    raise ValueError('Missing required environment variable: DRIVE_FOLDER_ID')
+    raise ValueError("Missing required environment variable: DRIVE_FOLDER_ID")
 
 # --- Autentifikacijos ir bazinės funkcijos (nepakitusios) ---
 def get_sheets_data():
