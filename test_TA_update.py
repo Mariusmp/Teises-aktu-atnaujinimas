@@ -213,7 +213,7 @@ class TestTAUpdate(unittest.TestCase):
         result = TA_update.convert_doc_to_pdf_via_drive(url, mock_drive_service)
         self.assertIsNone(result)
 
-    # --- Saugumo testai (Aplinkos kintamieji) ---
+  # --- Saugumo testai (Aplinkos kintamieji) ---
     def test_missing_environment_variables(self):
         import importlib
         with patch.dict('os.environ', clear=True):
@@ -225,5 +225,6 @@ class TestTAUpdate(unittest.TestCase):
             with self.assertRaises(ValueError) as context:
                 importlib.reload(TA_update)
             self.assertEqual(str(context.exception), "Missing required environment variable: DRIVE_FOLDER_ID")
+
 if __name__ == '__main__':
     unittest.main()
