@@ -245,7 +245,6 @@ def main():
 
     # Pre-fetch all files to avoid N+1 API calls
     drive_files_cache = get_all_files_in_drive_folder(drive_service, DRIVE_FOLDER_ID)
-performance-playwright-reuse-2714314675927484304
 
     with sync_playwright() as p:
         browser = p.chromium.launch()
@@ -257,7 +256,6 @@ performance-playwright-reuse-2714314675927484304
             url_lower = original_url.lower()
 
             if not file_name or not original_url: continue
-              main
             print(f"\n--- Apdirbamas failas: '{file_name}' ---")
 
             new_file_content_bytes = None

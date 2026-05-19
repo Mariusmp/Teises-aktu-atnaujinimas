@@ -79,9 +79,8 @@ class TestTAUpdateWeb(unittest.TestCase):
             self.fail("Queue was empty, expected a result message")
 
     @patch('TA_update_web.sync_playwright')
-    @patch('TA_update_web.time.sleep')
     @patch('TA_update_web.web_print')
-    def test_convert_html_to_pdf_bytes_playwright(self, mock_web_print, mock_sleep, mock_sync_playwright):
+    def test_convert_html_to_pdf_bytes_playwright(self, mock_web_print, mock_sync_playwright):
         mock_playwright = MagicMock()
         mock_browser = MagicMock()
         mock_page = MagicMock()
