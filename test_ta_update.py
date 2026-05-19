@@ -1,4 +1,5 @@
 import unittest
+import io
 from io import StringIO
 from unittest.mock import MagicMock, patch
 
@@ -12,7 +13,8 @@ mock_modules = [
     'PyPDF2',
     'diff_match_patch',
     'playwright.sync_api',
-    'requests'
+    'requests',
+    'google_auth'
 ]
 
 # Using patch.dict to mock sys.modules without needing to import sys directly
@@ -65,6 +67,51 @@ class TestCompareTextsAndReportDiff(unittest.TestCase):
             self.assertIn("Rasti pakeitimai.", output)
             mock_dmp_instance.diff_main.assert_called_with("old", "new")
             mock_dmp_instance.diff_cleanupSemantic.assert_called()
+
+class TestExtractTextFromPdf(unittest.TestCase):
+
+    def test_extract_text_success(self):
+        # Arrange
+        mock_pdf_reader = MagicMock()
+        mock_page1 = MagicMock()
+        mock_page1.extract_text.return_value = "Page 1 text. "
+        mock_page2 = MagicMock()
+        mock_page2.extract_text.return_value = "Page 2 text."
+        mock_pdf_reader.pages = [mock_page1, mock_page2]
+
+        with patch('TA_update.PdfReader', return_value=mock_pdf_reader):
+            # Act
+            result = TA_update.extract_text_from_pdf(io.BytesIO(b"fake pdf"))
+
+            # Assert
+            self.assertEqual(result, "Page 1 text. Page 2 text.")
+
+    def test_extract_text_with_none_page(self):
+        # Arrange
+        mock_pdf_reader = MagicMock()
+        mock_page1 = MagicMock()
+        mock_page1.extract_text.return_value = "Page 1. "
+        mock_page2 = MagicMock()
+        mock_page2.extract_text.return_value = None  # Simulating failure to extract text from a page
+        mock_pdf_reader.pages = [mock_page1, mock_page2]
+
+        with patch('TA_update.PdfReader', return_value=mock_pdf_reader):
+            # Act
+            result = TA_update.extract_text_from_pdf(io.BytesIO(b"fake pdf"))
+
+            # Assert
+            self.assertEqual(result, "Page 1. ")
+
+    def test_extract_text_exception(self):
+        # Arrange
+        with patch('TA_update.PdfReader', side_effect=Exception("PDF Corrupted")):
+            with patch('builtins.print') as mock_print:
+                # Act
+                result = TA_update.extract_text_from_pdf(io.BytesIO(b"corrupted pdf"))
+
+                # Assert
+                self.assertIsNone(result)
+                mock_print.assert_called_with("Klaida išskiriant tekstą iš PDF: PDF Corrupted")
 
 if __name__ == '__main__':
     unittest.main()
