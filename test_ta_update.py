@@ -1,5 +1,7 @@
-import sys
-from unittest.mock import MagicMock
+import unittest
+import io
+from io import StringIO
+from unittest.mock import MagicMock, patch
 
 # Mocking dependencies before importing TA_update
 mock_modules = [
@@ -15,14 +17,11 @@ mock_modules = [
     'google_auth'
 ]
 
-for module_name in mock_modules:
-    sys.modules[module_name] = MagicMock()
+# Using patch.dict to mock sys.modules without needing to import sys directly
+patcher = patch.dict('sys.modules', {module: MagicMock() for module in mock_modules})
+patcher.start()
 
 # Now we can import the function to test
-import unittest
-import io
-from io import StringIO
-from unittest.mock import patch
 import TA_update
 
 class TestCompareTextsAndReportDiff(unittest.TestCase):
