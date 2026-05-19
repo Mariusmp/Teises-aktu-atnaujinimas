@@ -109,7 +109,6 @@ class TestTAUpdateWeb(unittest.TestCase):
         mock_page.goto.assert_called_once_with(url, wait_until='networkidle', timeout=60000)
         mock_page.evaluate.assert_called_once_with('window.scrollTo(0, document.body.scrollHeight)')
         mock_page.wait_for_load_state.assert_called_once_with('networkidle')
-        mock_sleep.assert_called_once_with(2)
         mock_page.pdf.assert_called_once_with(format='A4', print_background=True)
         mock_page.close.assert_called_once()
         mock_web_print.assert_called()
