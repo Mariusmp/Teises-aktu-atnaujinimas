@@ -91,14 +91,11 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(None)):
 
     try:
         while True:
-            try:
-                # Use a short timeout so we can yield control back to the event loop
-                msg = TA_update_web.logger.q.get(timeout=0.1)
-                await websocket.send_text(json.dumps(msg))
-                if msg.get("type") == "done":
-                    break
-            except queue.Empty:
-                await asyncio.sleep(0.1)
+            # Use to_thread to avoid blocking the event loop while waiting for messages
+            msg = await asyncio.to_thread(TA_update_web.logger.q.get)
+            await websocket.send_text(json.dumps(msg))
+            if msg.get("type") == "done":
+                break
 
         # Send final results
         await websocket.send_text(json.dumps({"type": "final_results", "data": TA_update_web.logger.results}))
