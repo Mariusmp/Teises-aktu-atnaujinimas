@@ -6,27 +6,27 @@ on:
 
 jobs:
   test-and-merge:
-    # Užduotis vykdoma TIK jei PR autorius yra Jules botas
-    if: github.event.pull_request.user.login == 'google-jules[bot]'
+    # Užduotis vykdoma TIK jei PR autorius yra jūsų Jules botas
+    if: github.event.pull_request.user.login == 'google-labs-jules[bot]'
     runs-on: ubuntu-latest
 
     steps:
       - name: Atsisiųsti kodą
         uses: actions/checkout@v4
 
-      # Pavyzdys su Python (pakeiskite pagal savo kalbą: Node.js, Go ir t.t.)
-      - name: Konfigūruoti aplinką
-        uses: actions/setup-python@v5
+      # Konfigūruojame aplinką testams (pavyzdys su Node.js/JavaScript, jei naudojate kita kalba, pakeiskite)
+      - name: Konfigūruoti Node.js
+        uses: actions/setup-node@v4
         with:
-          python-node-version: '3.11'
+          node-version: '20'
 
       - name: Įdiegti priklausomybes ir paleisti testus
         run: |
-          pip install -r requirements.txt
-          pytest  # Čia nurodoma jūsų testų paleidimo komanda
+          npm ci
+          npm test  # Čia paleidžiami Jules sugeneruoti testai
 
-      # Jei testai praeina sėkmingai, šis žingsnis automatiškai sujungia kodą
-      - name: Sujungti pakeitimus (Merge)
+      # Jei testai praėjo, GitHub pats sujungia kodą
+      - name: Automatiškai sujungti (Merge)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
