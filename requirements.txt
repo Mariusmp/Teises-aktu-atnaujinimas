@@ -10,3 +10,4 @@ diff-match-patch
 playwright
 requests
 apscheduler==3.10.4
+httpx
