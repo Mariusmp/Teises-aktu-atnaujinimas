@@ -21,6 +21,12 @@ mock_modules = [
 patcher = patch.dict('sys.modules', {module: MagicMock() for module in mock_modules})
 patcher.start()
 
+# Mock environment variables before importing TA_update
+import os
+os.environ['SPREADSHEET_ID'] = 'mock_spreadsheet_id'
+os.environ['RANGE_NAME'] = 'mock_range_name'
+os.environ['DRIVE_FOLDER_ID'] = 'mock_drive_folder_id'
+
 # Now we can import the function to test
 import TA_update
 

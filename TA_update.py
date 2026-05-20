@@ -257,7 +257,7 @@ performance-playwright-reuse-2714314675927484304
             url_lower = original_url.lower()
 
             if not file_name or not original_url: continue
-              main
+
             print(f"\n--- Apdirbamas failas: '{file_name}' ---")
 
             new_file_content_bytes = None

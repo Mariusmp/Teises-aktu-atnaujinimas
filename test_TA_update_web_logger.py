@@ -19,6 +19,12 @@ mock_modules = [
 for module_name in mock_modules:
     sys.modules[module_name] = MagicMock()
 
+# Mock environment variables before importing TA_update_web
+import os
+os.environ['SPREADSHEET_ID'] = 'mock_spreadsheet_id'
+os.environ['RANGE_NAME'] = 'mock_range_name'
+os.environ['DRIVE_FOLDER_ID'] = 'mock_drive_folder_id'
+
 import TA_update_web
 
 class TestWebLogger(unittest.TestCase):
