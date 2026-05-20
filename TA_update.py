@@ -22,8 +22,6 @@ if not RANGE_NAME:
 DRIVE_FOLDER_ID = os.getenv('DRIVE_FOLDER_ID')
 if not DRIVE_FOLDER_ID:
     raise ValueError("Missing required environment variable: DRIVE_FOLDER_ID")
-# --- Konfigūracija ---
-SPREADSHEET_ID = os.getenv('SPREADSHEET_ID')
 if not SPREADSHEET_ID:
     raise ValueError("Missing required environment variable: SPREADSHEET_ID")
 
@@ -34,6 +32,7 @@ if not RANGE_NAME:
 DRIVE_FOLDER_ID = os.getenv('DRIVE_FOLDER_ID')
 if not DRIVE_FOLDER_ID:
     raise ValueError("Missing required environment variable: DRIVE_FOLDER_ID")
+ main
 
 # --- Autentifikacijos ir bazinės funkcijos (nepakitusios) ---
 def get_sheets_data():
@@ -245,7 +244,6 @@ def main():
 
     # Pre-fetch all files to avoid N+1 API calls
     drive_files_cache = get_all_files_in_drive_folder(drive_service, DRIVE_FOLDER_ID)
-performance-playwright-reuse-2714314675927484304
 
     with sync_playwright() as p:
         browser = p.chromium.launch()
@@ -257,7 +255,7 @@ performance-playwright-reuse-2714314675927484304
             url_lower = original_url.lower()
 
             if not file_name or not original_url: continue
-              main
+
             print(f"\n--- Apdirbamas failas: '{file_name}' ---")
 
             new_file_content_bytes = None

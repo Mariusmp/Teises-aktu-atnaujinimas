@@ -47,7 +47,7 @@ class TestApp(unittest.TestCase):
         # Naudojame Basic Auth, nes įjungėme apsaugą
         token = os.getenv("APP_PASSWORD", "test_password")
         response = self.client.get("/", auth=("admin", token))
-
+        
         self.assertEqual(response.status_code, 200)
         mock_template_response.assert_called_once()
 
