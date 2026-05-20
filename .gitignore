@@ -11,3 +11,4 @@ __pycache__/
 
 # Playwright naršyklių podėlis
 /ms-playwright/
+venv/
