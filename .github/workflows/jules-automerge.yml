@@ -14,16 +14,31 @@ jobs:
       - name: Atsisiųsti kodą
         uses: actions/checkout@v4
 
-      # Konfigūruojame aplinką testams (pavyzdys su Node.js/JavaScript, jei naudojate kita kalba, pakeiskite)
-      - name: Konfigūruoti Node.js
-        uses: actions/setup-node@v4
+      # Konfigūruojame aplinką testams
+      - name: Konfigūruoti Python
+        uses: actions/setup-python@v5
         with:
-          node-version: '20'
+          python-version: '3.12'
+          cache: 'pip'
 
-      - name: Įdiegti priklausomybes ir paleisti testus
+      - name: Įdiegti priklausomybes
         run: |
-          npm ci
-          npm test  # Čia paleidžiami Jules sugeneruoti testai
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Paleisti testus
+        env:
+          APP_PASSWORD: dummy_password_for_tests
+          SPREADSHEET_ID: dummy_sheet_id
+          DRIVE_FOLDER_ID: dummy_folder_id
+          RANGE_NAME: "Sheet1!A:B"
+        run: |
+          ./fix_tests2.sh
+          python -m unittest test_app.py
+          python -m unittest test_google_auth.py
+          python -m unittest test_TA_update_web.py
+          python -m unittest test_TA_update_web_logger.py
 
       # Jei testai praėjo, GitHub pats sujungia kodą
       - name: Automatiškai sujungti (Merge)

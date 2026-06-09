@@ -174,8 +174,7 @@ class TestTAUpdate(unittest.TestCase):
         mock_browser.new_page.return_value = mock_page
         mock_page.pdf.return_value = b"fake pdf bytes"
         url = "http://example.com"
-result = TA_update.convert_html_to_pdf_bytes_playwright(url, mock_browser)
-main
+        result = TA_update.convert_html_to_pdf_bytes_playwright(url, mock_browser)
         self.assertIsInstance(result, io.BytesIO)
         self.assertEqual(result.getvalue(), b"fake pdf bytes")
         mock_browser.new_page.assert_called_once()
