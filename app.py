@@ -107,4 +107,17 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(None)):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app:app", host="127.0.0.1", port=8000, reload=True)
+
+    app_host = os.getenv("APP_HOST", "127.0.0.1")
+    app_port = int(os.getenv("APP_PORT", 8000))
+    app_reload_str = os.getenv("APP_RELOAD", "False").lower()
+    app_reload = app_reload_str in ["true", "1", "t", "yes"]
+    app_log_level = os.getenv("APP_LOG_LEVEL", "info")
+
+    uvicorn.run(
+        "app:app",
+        host=app_host,
+        port=app_port,
+        reload=app_reload,
+        log_level=app_log_level
+    )
