@@ -69,6 +69,7 @@ if os.getenv("APP_PASSWORD") is None:
     print("ERROR: APP_PASSWORD environment variable must be set.")
     sys.exit(1)
 
+os.makedirs("static", exist_ok=True)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
