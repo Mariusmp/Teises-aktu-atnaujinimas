@@ -30,6 +30,7 @@
         .controls {
             display: flex;
             justify-content: center;
+            gap: 12px;
             margin-bottom: 20px;
         }
         button {
@@ -48,6 +49,16 @@
         button:disabled {
             background-color: #95a5a6;
             cursor: not-allowed;
+        }
+        .btn-stop {
+            background-color: #e74c3c;
+            display: none;
+        }
+        .btn-stop:hover {
+            background-color: #c0392b;
+        }
+        .btn-stop:disabled {
+            background-color: #e6b0aa;
         }
 
         .progress-container {
@@ -71,7 +82,7 @@
 
         .log-box {
             width: 100%;
-            height: 200px;
+            height: 260px;
             background-color: #1e1e1e;
             color: #d4d4d4;
             font-family: monospace;
@@ -103,7 +114,6 @@
         .status-error { color: #e74c3c; font-weight: bold; }
         .status-none { color: #7f8c8d; }
 
-        /* Modal styles for Diff */
         .modal {
             display: none;
             position: fixed;
@@ -145,6 +155,7 @@
 
     <div class="controls">
         <button id="updateBtn" onclick="startUpdate()">Atnaujinti / Tikrinti pakeitimus</button>
+        <button id="stopBtn" class="btn-stop" onclick="stopUpdate()">Sustabdyti</button>
     </div>
 
     <div class="progress-container" id="progressContainer">
@@ -167,7 +178,6 @@
     </table>
 </div>
 
-<!-- Modal for Diff -->
 <div id="diffModal" class="modal">
     <div class="modal-content">
         <span class="close" onclick="closeModal()">&times;</span>
@@ -178,18 +188,33 @@
 
 <script>
     let ws;
+    const token = "{{ token }}";
+
+    function resetButtons() {
+        const btn = document.getElementById('updateBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        btn.disabled = false;
+        btn.innerText = "Atnaujinti / Tikrinti pakeitimus";
+        stopBtn.style.display = 'none';
+        stopBtn.disabled = false;
+        stopBtn.innerText = "Sustabdyti";
+    }
 
     function startUpdate() {
         const btn = document.getElementById('updateBtn');
+        const stopBtn = document.getElementById('stopBtn');
         const progressContainer = document.getElementById('progressContainer');
         const progressBar = document.getElementById('progressBar');
         const logBox = document.getElementById('logBox');
         const resultsTable = document.getElementById('resultsTable');
         const resultsBody = document.getElementById('resultsBody');
 
-        // Reset UI
         btn.disabled = true;
         btn.innerText = "Vykdoma...";
+        stopBtn.style.display = 'inline-block';
+        stopBtn.disabled = false;
+        stopBtn.innerText = "Sustabdyti";
+
         progressContainer.style.display = 'block';
         progressBar.style.width = '0%';
         progressBar.innerText = '0%';
@@ -198,10 +223,8 @@
         resultsTable.style.display = 'none';
         resultsBody.innerHTML = '';
 
-        // Connect to WebSocket
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const token = "{{ token }}";
-        ws = new WebSocket(`${protocol}//${window.location.host}/ws?token=${token}`);
+        ws = new WebSocket(`${protocol}//${window.location.host}/ws?token=${encodeURIComponent(token)}`);
 
         ws.onmessage = function(event) {
             const data = JSON.parse(event.data);
@@ -219,8 +242,7 @@
                 renderResults(data.data);
             }
             else if (data.type === 'done') {
-                btn.disabled = false;
-                btn.innerText = "Atnaujinti / Tikrinti pakeitimus";
+                resetButtons();
                 logBox.innerHTML += `<div><b>Procesas baigtas!</b></div>`;
                 logBox.scrollTop = logBox.scrollHeight;
                 ws.close();
@@ -230,9 +252,21 @@
         ws.onerror = function(error) {
             console.error("WebSocket error", error);
             logBox.innerHTML += `<div style="color: red;">Klaida prisijungiant prie serverio.</div>`;
-            btn.disabled = false;
-            btn.innerText = "Atnaujinti / Tikrinti pakeitimus";
+            resetButtons();
         };
+    }
+
+    function stopUpdate() {
+        const stopBtn = document.getElementById('stopBtn');
+        stopBtn.disabled = true;
+        stopBtn.innerText = "Stabdoma...";
+
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ action: "stop" }));
+        }
+
+        fetch(`/stop?token=${encodeURIComponent(token)}`, { method: 'POST' })
+            .catch(err => console.error("Stop request error:", err));
     }
 
     function renderResults(results) {
@@ -242,15 +276,13 @@
         if (results.length > 0) {
             resultsTable.style.display = 'table';
 
-            results.forEach((res, index) => {
+            results.forEach((res) => {
                 const tr = document.createElement('tr');
 
-                // Name
                 const tdName = document.createElement('td');
                 tdName.innerText = res.file_name;
                 tr.appendChild(tdName);
 
-                // Status
                 const tdStatus = document.createElement('td');
                 if (res.status === 'updated') {
                     tdStatus.innerHTML = '<span class="status-updated">Atnaujinta</span>';
@@ -263,7 +295,6 @@
                 }
                 tr.appendChild(tdStatus);
 
-                // Link
                 const tdLink = document.createElement('td');
                 if (res.link) {
                     tdLink.innerHTML = `<a href="${res.link}" target="_blank">Atidaryti PDF</a>`;
@@ -272,7 +303,6 @@
                 }
                 tr.appendChild(tdLink);
 
-                // Diff
                 const tdDiff = document.createElement('td');
                 if (res.diff && res.diff.has_changes) {
                     const btn = document.createElement('button');
@@ -298,7 +328,6 @@
         document.getElementById('diffModal').style.display = 'none';
     }
 
-    // Close modal if clicked outside of it
     window.onclick = function(event) {
         const modal = document.getElementById('diffModal');
         if (event.target == modal) {
