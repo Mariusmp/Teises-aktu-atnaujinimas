@@ -2,6 +2,7 @@ import io
 import os
 import re
 import queue
+import random
 import threading
 from urllib.parse import urljoin
 
@@ -35,6 +36,15 @@ class WebLogger:
 
 
 logger = WebLogger()
+stop_event = threading.Event()
+_update_thread = None
+
+
+def request_stop():
+    """Aktyvuoja sustabdymo signalą vykdomam atnaujinimo procesui."""
+    if not stop_event.is_set():
+        stop_event.set()
+        web_print("\n[!] Gautas sustabdymo signalas. Stabdomas procesas...")
 
 
 def web_print(*args, **kwargs):
@@ -92,9 +102,22 @@ def clean_markdown_text(md_text):
     return text.strip()
 
 
+def _is_cloudflare_blocked(html_content, page_title=""):
+    """Patikrina, ar puslapis yra Cloudflare WAF blokavimo pranešimas."""
+    combined = f"{page_title}\n{html_content[:4000]}".lower()
+    markers = (
+        "sorry, you have been blocked",
+        "you are unable to access lrs.lt",
+        "attention required! | cloudflare",
+        "cf-error-details",
+        "cloudflare ray id",
+    )
+    return any(marker in combined for marker in markers)
+
+
 def extract_markdown_from_html(html_content):
     """Išvalo navigaciją bei šonines juostas ir konvertuoja pagrindinį akto HTML į Markdown."""
-    if not html_content:
+    if not html_content or _is_cloudflare_blocked(html_content):
         return ""
     try:
         soup = BeautifulSoup(html_content, 'html.parser')
@@ -200,7 +223,6 @@ def download_file_from_url_to_bytes(url, expect_pdf=False):
         response.raise_for_status()
         content = response.content
 
-        # HTTP 202 arba tuščias atsakas reiškia WAF JS patikrą (pvz., EUR-Lex)
         if response.status_code == 202 or not content or len(content) < 100:
             web_print(f"Gautas tuščias arba WAF atsakas (HTTP {response.status_code}, {len(content)} B) iš {url}")
             return None
@@ -227,10 +249,12 @@ def download_pdf_via_playwright(url, browser):
         try:
             page.goto(url, wait_until='domcontentloaded', timeout=60000)
         except Exception:
-            # Chromium išmeta ERR_ABORTED, kai nuoroda iškart pradeda failo atsisiuntimą
             pass
 
         for _ in range(30):
+            if stop_event.is_set():
+                return None
+
             if downloads:
                 tmp_path = downloads[0].path()
                 if tmp_path and os.path.exists(tmp_path):
@@ -265,7 +289,7 @@ def download_pdf_via_playwright(url, browser):
 
 def convert_doc_bytes_to_pdf_via_drive(doc_content, source_mimetype, drive_service):
     """Konvertuoja jau atsisiųstus ODT arba DOCX baitus į PDF per Google Drive API."""
-    if not doc_content or not drive_service:
+    if not doc_content or not drive_service or stop_event.is_set():
         return None
     temp_file_id = None
     try:
@@ -326,6 +350,9 @@ def convert_doc_to_pdf_via_drive(url, drive_service):
 def _try_download_via_selectors(page, selectors, expected_kind):
     """Bando rasti ir atsisiųsti failą pagal puslapio mygtukų/nuorodų selektorius."""
     for selector in selectors:
+        if stop_event.is_set():
+            return None, ""
+
         locator = page.locator(selector)
         try:
             if locator.count() == 0:
@@ -340,7 +367,6 @@ def _try_download_via_selectors(page, selectors, expected_kind):
         except Exception:
             href = None
 
-        # 1. Tiesioginė nuoroda su Playwright sesijos slapukais
         if href and not href.startswith(('#', 'javascript:')):
             abs_url = urljoin(page.url, href)
             try:
@@ -355,7 +381,6 @@ def _try_download_via_selectors(page, selectors, expected_kind):
             except Exception:
                 pass
 
-        # 2. Paspaudimas per Playwright download įvykį
         try:
             with page.expect_download(timeout=20000) as download_info:
                 first_el.click(timeout=5000)
@@ -410,9 +435,9 @@ def convert_html_to_pdf_bytes_playwright(url, browser):
 def process_web_page_playwright(url, browser, drive_service=None, prefer_native=True):
     """
     Apdoroja tinklalapį per Playwright:
-    1. Ištraukia švarų Markdown iš akto HTML.
-    2. PDF gauna pagal prioritetus: tikras PDF mygtukas -> DOCX/ODT mygtukas -> pilnas HTML PDF.
-    Grąžina (pdf_bytes_io, markdown_str).
+    1. Patikrina, ar puslapio neužblokavo Cloudflare WAF.
+    2. Ištraukia švarų Markdown iš akto HTML.
+    3. PDF gauna pagal prioritetus: tikras PDF mygtukas -> DOCX/ODT mygtukas -> pilnas HTML PDF.
     """
     web_print(f"\nApdorojamas tinklalapis su Playwright: {url}")
     pdf_io = None
@@ -421,24 +446,40 @@ def process_web_page_playwright(url, browser, drive_service=None, prefer_native=
 
     try:
         page = _new_stealth_page(browser)
-        # Naudojame domcontentloaded, nes e-seimas.lrs.lt laiko atviras fonines užklausas ir stringa ties networkidle
-        page.goto(url, wait_until='domcontentloaded', timeout=60000)
+        page.goto(url, wait_until='domcontentloaded', timeout=45000)
+
+        if stop_event.is_set():
+            return None, ""
+
+        initial_html = page.content()
+        initial_title = page.title() if hasattr(page, 'title') else ""
+        if _is_cloudflare_blocked(initial_html, initial_title):
+            web_print(f"Cloudflare WAF užblokavo prieigą prie {url}. Pakeiskite nuorodą į e-tar.lt.")
+            return None, ""
 
         try:
             page.wait_for_selector(
                 '#documentContent, .document-content, .act-content, a[href*="pdf" i], a[href*="docx" i]',
-                timeout=15000
+                timeout=12000
             )
         except Exception:
             pass
 
-        page.wait_for_timeout(2000)
+        if stop_event.is_set():
+            return None, ""
+
+        page.wait_for_timeout(1500)
         page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
-        page.wait_for_timeout(1000)
+        page.wait_for_timeout(800)
 
-        md_text = extract_markdown_from_html(page.content())
+        full_html = page.content()
+        if _is_cloudflare_blocked(full_html, page.title() if hasattr(page, 'title') else ""):
+            web_print(f"Cloudflare WAF užblokavo prieigą prie {url}. Pakeiskite nuorodą į e-tar.lt.")
+            return None, ""
 
-        if prefer_native:
+        md_text = extract_markdown_from_html(full_html)
+
+        if prefer_native and not stop_event.is_set():
             pdf_selectors = [
                 'a[href*=".pdf" i]',
                 'a[href*="format=pdf" i]',
@@ -454,7 +495,7 @@ def process_web_page_playwright(url, browser, drive_service=None, prefer_native=
             if pdf_io:
                 web_print(f"Parsiųstas tikras daugiapuslapis PDF iš puslapio ({pdf_src}).")
 
-            if not pdf_io and drive_service:
+            if not pdf_io and drive_service and not stop_event.is_set():
                 docx_selectors = [
                     'a[href*=".docx" i]',
                     'a[href*="format=docx" i]',
@@ -492,7 +533,7 @@ def process_web_page_playwright(url, browser, drive_service=None, prefer_native=
                             md_text = docx_md
                     pdf_io = convert_doc_bytes_to_pdf_via_drive(doc_io, doc_mime, drive_service)
 
-        if not pdf_io:
+        if not pdf_io and not stop_event.is_set():
             web_print("Naudojamas pilno puslapio HTML -> PDF spausdinimo režimas.")
             pdf_io = _render_full_page_pdf(page)
 
@@ -646,6 +687,10 @@ def _main_logic():
         web_print("Nepavyko gauti duomenų iš Sheets.")
         return
 
+    if stop_event.is_set():
+        web_print("\n[!] Procesas sustabdytas vartotojo.")
+        return
+
     drive_service = get_drive_service()
     drive_files_cache = get_all_files_in_drive_folder(drive_service, DRIVE_FOLDER_ID)
 
@@ -656,6 +701,10 @@ def _main_logic():
     with sync_playwright() as p:
         browser = p.chromium.launch(args=["--disable-blink-features=AutomationControlled"])
         for i, row in enumerate(valid_rows):
+            if stop_event.is_set():
+                web_print("\n[!] Procesas sustabdytas vartotojo.")
+                break
+
             base_name = row[0].strip()
             pdf_file_name = f"{base_name}.pdf"
             md_file_name = f"{base_name}.md"
@@ -669,12 +718,12 @@ def _main_logic():
             if url_lower.endswith('.pdf') or '/format/iso_pdf/' in url_lower or '/txt/pdf/' in url_lower:
                 web_print("Aptikta tiesioginė PDF nuoroda.")
                 new_pdf_bytes = download_file_from_url_to_bytes(original_url, expect_pdf=True)
-                if not new_pdf_bytes:
+                if not new_pdf_bytes and not stop_event.is_set():
                     new_pdf_bytes = download_pdf_via_playwright(original_url, browser)
             elif url_lower.endswith(('.odt', '.docx')) or '/format/oo3_odt/' in url_lower:
                 web_print("Aptiktas ODT/DOCX dokumentas. Konvertuojama per Google Drive.")
                 doc_bytes = download_file_from_url_to_bytes(original_url)
-                if doc_bytes:
+                if doc_bytes and not stop_event.is_set():
                     if url_lower.endswith('.docx'):
                         source_mime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
                         new_md_text = extract_markdown_from_docx(doc_bytes)
@@ -687,7 +736,10 @@ def _main_logic():
                     original_url, browser, drive_service=drive_service, prefer_native=True
                 )
 
-            # Atsarginis Markdown generavimas iš PDF teksto
+            if stop_event.is_set():
+                web_print("\n[!] Procesas sustabdytas vartotojo.")
+                break
+
             if new_pdf_bytes and len(new_md_text.strip()) < 50:
                 extracted_pdf_text = extract_text_from_pdf(new_pdf_bytes)
                 if extracted_pdf_text:
@@ -698,7 +750,7 @@ def _main_logic():
                 logger.add_result({
                     "file_name": pdf_file_name,
                     "status": "error",
-                    "message": "Nepavyko gauti turinio",
+                    "message": "Nepavyko gauti turinio (galimas Cloudflare blokavimas)",
                     "link": original_url,
                     "diff": None
                 })
@@ -709,7 +761,6 @@ def _main_logic():
             existing_md = drive_files_cache.get(md_file_name)
             diff_info = None
 
-            # Pakeitimų paieška (pirmenybė švariam .md tekstui, atsarginis – .pdf)
             if existing_md and new_md_text:
                 old_md_io = download_file_content_from_drive(drive_service, existing_md['id'])
                 if old_md_io:
@@ -722,14 +773,16 @@ def _main_logic():
                     new_pdf_text = extract_text_from_pdf(new_pdf_bytes)
                     diff_info = compare_texts_and_report_diff(old_pdf_text, new_pdf_text, pdf_file_name)
 
-            # Išsaugome .md failą Open WebUI žinių bazei
+            if stop_event.is_set():
+                web_print("\n[!] Procesas sustabdytas vartotojo.")
+                break
+
             if new_md_text:
                 md_io = io.BytesIO(new_md_text.encode('utf-8'))
                 _sync_single_file_to_drive(
                     drive_service, drive_files_cache, md_file_name, md_io, mime_type='text/markdown'
                 )
 
-            # Išsaugome .pdf failą
             if new_pdf_bytes:
                 pdf_id, was_updated = _sync_single_file_to_drive(
                     drive_service, drive_files_cache, pdf_file_name, new_pdf_bytes, mime_type='application/pdf'
@@ -745,12 +798,23 @@ def _main_logic():
 
             logger.progress(i + 1, total_files)
 
+            # Trumpa pauzė tarp užklausų (nutraukiama akimirksniu paspaudus „Sustabdyti“)
+            if i + 1 < total_files and stop_event.wait(random.uniform(1.5, 3.0)):
+                web_print("\n[!] Procesas sustabdytas vartotojo.")
+                break
+
         browser.close()
 
 
 def run_update_thread():
-    thread = threading.Thread(target=main)
-    thread.start()
+    global _update_thread
+    if _update_thread is not None and _update_thread.is_alive():
+        web_print("Atnaujinimo procesas jau vyksta.")
+        return False
+    stop_event.clear()
+    _update_thread = threading.Thread(target=main, daemon=True)
+    _update_thread.start()
+    return True
 
 
 if __name__ == '__main__':
