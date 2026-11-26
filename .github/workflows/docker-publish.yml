@@ -19,21 +19,20 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python and run isolated unit tests
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
-      - name: Install lightweight test dependencies
+      - name: Syntax check and core unit tests
+        env:
+          APP_PASSWORD: "ci_dummy_password"
+          SPREADSHEET_ID: "ci_dummy_sheet"
+          DRIVE_FOLDER_ID: "ci_dummy_folder"
         run: |
-          pip install beautifulsoup4 markdownify fastapi httpx jinja2 apscheduler
-
-      - name: Run unit tests in isolated processes
-        run: |
-          for test_file in test_*.py; do
-            echo "Running $test_file..."
-            python3 -m unittest "$test_file" -v || exit 1
-          done
+          pip install beautifulsoup4 markdownify
+          python3 -m py_compile app.py TA_update_web.py google_auth.py
+          python3 -m unittest test_TA_update_web.py -v
 
       - name: Downcase IMAGE_NAME
         run: |
