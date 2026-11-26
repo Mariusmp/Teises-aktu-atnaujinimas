@@ -1,7 +1,23 @@
-import time
-
+import io
+import os
+import re
 import queue
+import tempfile
 import threading
+from urllib.parse import urljoin
+
+import docx
+import requests
+from bs4 import BeautifulSoup
+from diff_match_patch import diff_match_patch
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
+from markdownify import markdownify as html_to_md
+from playwright.sync_api import sync_playwright
+from PyPDF2 import PdfReader
+
+from google_auth import authenticate_google_api
+
 
 class WebLogger:
     def __init__(self):
@@ -18,24 +34,16 @@ class WebLogger:
         self.results.append(result)
         self.q.put({"type": "result", "data": result})
 
+
 logger = WebLogger()
+
 
 def web_print(*args, **kwargs):
     msg = " ".join(map(str, args))
-    print(msg) # still print to console
+    print(msg)
     if hasattr(logger, 'log'):
         logger.log(msg)
 
-import os
-import io
-import requests
-
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
-from PyPDF2 import PdfReader
-from diff_match_patch import diff_match_patch
-from playwright.sync_api import sync_playwright
-from google_auth import authenticate_google_api
 
 # --- Konfigūracija ---
 SCOPES = ['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/spreadsheets.readonly']
@@ -51,7 +59,13 @@ if not RANGE_NAME:
 if not DRIVE_FOLDER_ID:
     raise ValueError("Missing environment variable: DRIVE_FOLDER_ID")
 
-# --- Autentifikacijos ir bazinės funkcijos (nepakitusios) ---
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
+
+# --- Autentifikacija ir Google API ---
 def get_sheets_data():
     creds = authenticate_google_api()
     try:
@@ -63,53 +77,127 @@ def get_sheets_data():
         web_print(f"\nKlaida gaunant duomenis iš Google Sheets: {e}")
         return []
 
+
 def get_drive_service():
     creds = authenticate_google_api()
     return build('drive', 'v3', credentials=creds)
 
-# --- Atnaujintos konvertavimo funkcijos ---
 
-def convert_html_to_pdf_bytes_playwright(url, browser):
-    """Konvertuoja HTML puslapį į PDF naudojant Playwright."""
-    web_print(f"\nBandoma konvertuoti HTML puslapį į PDF su Playwright: {url}")
-    pdf_bytes = None
+# --- Teksto ir Markdown konvertavimo funkcijos ---
+def clean_markdown_text(md_text):
+    if not md_text:
+        return ""
+    text = md_text.replace('\r\n', '\n').replace('\r', '\n')
+    text = re.sub(r'[ \t]+\n', '\n', text)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
+
+
+def extract_markdown_from_html(html_content):
+    """Išvalo navigaciją bei šonines juostas ir konvertuoja pagrindinį akto HTML į Markdown."""
+    if not html_content:
+        return ""
     try:
-        page = browser.new_page()
-        # Bandoma imituoti tikrą vartotoją
-        page.set_extra_http_headers({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"})
-        page.goto(url, wait_until='networkidle', timeout=60000)
+        soup = BeautifulSoup(html_content, 'html.parser')
 
-        page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
-        page.wait_for_load_state('networkidle')
+        for tag in soup(['script', 'style', 'noscript', 'iframe', 'svg', 'nav', 'header', 'footer']):
+            tag.decompose()
 
-        pdf_bytes = page.pdf(format='A4', print_background=True)
+        noise_selectors = [
+            '.sidebar', '#sidebar', '.menu', '#menu', '.navigation', '.nav',
+            '.breadcrumbs', '.toolbar', '.no-print', '[role="navigation"]'
+        ]
+        for selector in noise_selectors:
+            for el in soup.select(selector):
+                el.decompose()
+
+        content_selectors = [
+            '#documentContent', '.document-content', '.act-content', '#actContent',
+            'article', 'main', '#content', '.content'
+        ]
+        target = None
+        for selector in content_selectors:
+            candidate = soup.select_one(selector)
+            if candidate and len(candidate.get_text(strip=True)) >= 200:
+                target = candidate
+                break
+
+        if target is None:
+            target = soup.body if soup.body else soup
+
+        md_raw = html_to_md(str(target), heading_style="ATX", strip=['img', 'button', 'input'])
+        return clean_markdown_text(md_raw)
     except Exception as e:
-        web_print(f"\nKlaida konvertuojant HTML su Playwright: {e}")
-        return None
-    finally:
-        if 'page' in locals():
-            page.close()
-    return io.BytesIO(pdf_bytes) if pdf_bytes else None
+        web_print(f"\nKlaida konvertuojant HTML į Markdown: {e}")
+        return ""
 
-def convert_doc_to_pdf_via_drive(url, drive_service):
-    """Konvertuoja ODT arba DOCX failą į PDF naudojant Google Drive API."""
-    web_print(f"\nBandoma konvertuoti dokumentą per Google Drive: {url}")
-    temp_file_id = None
-    source_mimetype = ''
 
-    url_lower = url.lower()
-    if url_lower.endswith('.odt') or '/format/oo3_odt/' in url_lower:
-        source_mimetype = 'application/vnd.oasis.opendocument.text'
-    elif url_lower.endswith('.docx'):
-        source_mimetype = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-    else:
-        web_print("Neatpažintas dokumento formatas konvertavimui per Drive.")
-        return None
-
+def extract_markdown_from_docx(docx_bytes_io):
+    """Ištraukia struktūrizuotą tekstą ir lenteles iš DOCX į Markdown."""
     try:
-        doc_content = download_file_from_url_to_bytes(url)
-        if not doc_content: return None
+        docx_bytes_io.seek(0)
+        document = docx.Document(docx_bytes_io)
+        blocks = []
 
+        for para in document.paragraphs:
+            text = para.text.strip()
+            if not text:
+                continue
+            style_name = (para.style.name or "").lower() if para.style else ""
+            if style_name.startswith('heading'):
+                parts = style_name.split()
+                level = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 2
+                level = max(1, min(level, 6))
+                blocks.append(f"{'#' * level} {text}")
+            elif 'list' in style_name:
+                blocks.append(f"- {text}")
+            else:
+                blocks.append(text)
+
+        for table in document.tables:
+            rows_md = []
+            for r_idx, row in enumerate(table.rows):
+                cells = [cell.text.strip().replace('\n', ' ') for cell in row.cells]
+                rows_md.append("| " + " | ".join(cells) + " |")
+                if r_idx == 0:
+                    rows_md.append("| " + " | ".join(["---"] * len(cells)) + " |")
+            if rows_md:
+                blocks.append("\n".join(rows_md))
+
+        docx_bytes_io.seek(0)
+        return clean_markdown_text("\n\n".join(blocks))
+    except Exception as e:
+        web_print(f"\nKlaida išskiriant Markdown iš DOCX: {e}")
+        return ""
+
+
+def text_to_markdown(raw_text):
+    """Suformuoja švarias pastraipas iš neapdoroto PDF teksto."""
+    if not raw_text:
+        return ""
+    lines = [line.strip() for line in raw_text.splitlines()]
+    return clean_markdown_text("\n\n".join(line for line in lines if line))
+
+
+# --- Atsisiuntimo ir PDF konvertavimo funkcijos ---
+def download_file_from_url_to_bytes(url):
+    headers = {'User-Agent': USER_AGENT}
+    try:
+        response = requests.get(url, stream=True, headers=headers, timeout=30)
+        response.raise_for_status()
+        return io.BytesIO(response.content)
+    except requests.exceptions.RequestException as e:
+        web_print(f"\nKlaida atsisiunčiant failą iš URL {url}: {e}")
+        return None
+
+
+def convert_doc_bytes_to_pdf_via_drive(doc_content, source_mimetype, drive_service):
+    """Konvertuoja jau atsisiųstus ODT arba DOCX baitus į PDF per Google Drive API."""
+    if not doc_content or not drive_service:
+        return None
+    temp_file_id = None
+    try:
+        doc_content.seek(0)
         file_metadata = {
             'name': 'temp_conversion_doc',
             'parents': [DRIVE_FOLDER_ID],
@@ -130,30 +218,218 @@ def convert_doc_to_pdf_via_drive(url, drive_service):
         downloader = MediaIoBaseDownload(pdf_content, request)
         done = False
         while not done:
-            status, done = downloader.next_chunk()
+            _, done = downloader.next_chunk()
         pdf_content.seek(0)
 
         drive_service.files().delete(fileId=temp_file_id, supportsAllDrives=True).execute()
         return pdf_content
-
     except Exception as e:
         web_print(f"\nKlaida konvertuojant dokumentą per Drive: {e}")
         if temp_file_id:
-             drive_service.files().delete(fileId=temp_file_id, supportsAllDrives=True).execute()
+            try:
+                drive_service.files().delete(fileId=temp_file_id, supportsAllDrives=True).execute()
+            except Exception:
+                pass
         return None
 
-# --- Likusios funkcijos (nepakitusios) ---
-def download_file_from_url_to_bytes(url):
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+
+def convert_doc_to_pdf_via_drive(url, drive_service):
+    """Atsisiunčia ODT arba DOCX failą iš URL ir konvertuoja į PDF per Google Drive API."""
+    web_print(f"\nBandoma konvertuoti dokumentą per Google Drive: {url}")
+    url_lower = url.lower()
+    if url_lower.endswith('.odt') or '/format/oo3_odt/' in url_lower:
+        source_mimetype = 'application/vnd.oasis.opendocument.text'
+    elif url_lower.endswith('.docx'):
+        source_mimetype = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    else:
+        web_print("Neatpažintas dokumento formatas konvertavimui per Drive.")
+        return None
+
+    doc_content = download_file_from_url_to_bytes(url)
+    if not doc_content:
+        return None
+    return convert_doc_bytes_to_pdf_via_drive(doc_content, source_mimetype, drive_service)
+
+
+def _try_download_via_selectors(page, selectors, expected_kind):
+    """Bando rasti ir atsisiųsti failą pagal puslapio mygtukų/nuorodų selektorius."""
+    for selector in selectors:
+        locator = page.locator(selector)
+        try:
+            if locator.count() == 0:
+                continue
+        except Exception:
+            continue
+
+        first_el = locator.first
+        href = None
+        try:
+            href = first_el.get_attribute('href')
+        except Exception:
+            href = None
+
+        # 1. Tiesioginė nuoroda su Playwright sesijos slapukais
+        if href and not href.startswith(('#', 'javascript:')):
+            abs_url = urljoin(page.url, href)
+            try:
+                resp = page.request.get(abs_url, timeout=30000)
+                if resp.ok:
+                    body = resp.body()
+                    ctype = resp.headers.get('content-type', '').lower()
+                    if expected_kind == 'pdf' and (body.startswith(b'%PDF') or 'pdf' in ctype):
+                        return io.BytesIO(body), abs_url
+                    if expected_kind in ('docx', 'odt') and len(body) > 500 and 'text/html' not in ctype:
+                        return io.BytesIO(body), abs_url
+            except Exception:
+                pass
+
+        # 2. Paspaudimas per Playwright download įvykį
+        try:
+            with page.expect_download(timeout=20000) as download_info:
+                first_el.click(timeout=5000)
+            download = download_info.value
+            tmp_path = download.path()
+            if tmp_path and os.path.exists(tmp_path):
+                with open(tmp_path, 'rb') as f:
+                    data = f.read()
+                if data:
+                    return io.BytesIO(data), download.suggested_filename or ""
+        except Exception:
+            continue
+
+    return None, ""
+
+
+def _render_full_page_pdf(page):
+    """Išplečia fiksuoto aukščio konteinerius, paslepia meniu ir sugeneruoja pilną daugiapuslapį PDF."""
+    page.add_style_tag(content="""
+        html, body, div, main, section, article, table {
+            overflow: visible !important;
+            height: auto !important;
+            max-height: none !important;
+        }
+        @media print {
+            nav, header, footer, .sidebar, #sidebar, .menu, #menu, .navigation, .no-print {
+                display: none !important;
+            }
+            body, main, #content, .content {
+                width: 100% !important;
+                max-width: 100% !important;
+                margin: 0 !important;
+                padding: 0 !important;
+            }
+        }
+    """)
+    pdf_bytes = page.pdf(
+        format='A4',
+        print_background=True,
+        scale=0.85,
+        margin={'top': '12mm', 'bottom': '12mm', 'left': '10mm', 'right': '10mm'}
+    )
+    return io.BytesIO(pdf_bytes) if pdf_bytes else None
+
+
+def convert_html_to_pdf_bytes_playwright(url, browser):
+    """Atgaliniam suderinamumui: konvertuoja HTML puslapį į PDF su pilno puslapio CSS išplėtimu."""
+    pdf_bytes, _ = process_web_page_playwright(url, browser, drive_service=None, prefer_native=False)
+    return pdf_bytes
+
+
+def process_web_page_playwright(url, browser, drive_service=None, prefer_native=True):
+    """
+    Apdoroja tinklalapį per Playwright:
+    1. Ištraukia švarų Markdown iš akto HTML.
+    2. PDF gauna pagal prioritetus: tikras PDF mygtukas -> DOCX/ODT mygtukas -> pilnas HTML PDF.
+    Grąžina (pdf_bytes_io, markdown_str).
+    """
+    web_print(f"\nApdorojamas tinklalapis su Playwright: {url}")
+    pdf_io = None
+    md_text = ""
+    page = None
+
     try:
-        response = requests.get(url, stream=True, headers=headers, timeout=20)
-        response.raise_for_status()
-        return io.BytesIO(response.content)
-    except requests.exceptions.RequestException as e:
-        web_print(f"\nKlaida atsisiunčiant failą iš URL {url}: {e}")
-        return None
+        page = browser.new_page(viewport={"width": 1280, "height": 900}, accept_downloads=True)
+        page.set_extra_http_headers({"User-Agent": USER_AGENT})
+        page.goto(url, wait_until='networkidle', timeout=60000)
+
+        page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
+        page.wait_for_load_state('networkidle')
+
+        # Ištraukiame švarų Markdown iš puslapio HTML
+        md_text = extract_markdown_from_html(page.content())
+
+        if prefer_native:
+            # 1 prioritetas: tikras PDF atsisiuntimo mygtukas puslapyje
+            pdf_selectors = [
+                'a[href*=".pdf" i]',
+                'a[href*="format=pdf" i]',
+                'a[href*="/format/iso_pdf/" i]',
+                'a[href*="/txt/pdf/" i]',
+                'a[title*="PDF" i]',
+                'button[title*="PDF" i]',
+                'a:has(img[alt*="PDF" i])',
+                'a:has(img[title*="PDF" i])',
+                'a:has(img[src*="pdf" i])',
+            ]
+            pdf_io, pdf_src = _try_download_via_selectors(page, pdf_selectors, 'pdf')
+            if pdf_io:
+                web_print(f"Parsiųstas tikras daugiapuslapis PDF iš puslapio ({pdf_src}).")
+
+            # 2 prioritetas: DOCX arba ODT mygtukas puslapyje (pvz., e-seimas projektai)
+            if not pdf_io and drive_service:
+                docx_selectors = [
+                    'a[href*=".docx" i]',
+                    'a[href*="format=docx" i]',
+                    'a[title*="DOCX" i]',
+                    'a[title*="Word" i]',
+                    'a:has(img[alt*="DOCX" i])',
+                    'a:has(img[title*="DOCX" i])',
+                    'a:has(img[src*="docx" i])',
+                    'a:has(img[src*="word" i])',
+                ]
+                odt_selectors = [
+                    'a[href*=".odt" i]',
+                    'a[href*="format=odt" i]',
+                    'a[href*="/format/oo3_odt/" i]',
+                    'a[title*="ODT" i]',
+                    'a:has(img[alt*="ODT" i])',
+                    'a:has(img[title*="ODT" i])',
+                    'a:has(img[src*="odt" i])',
+                ]
+
+                doc_io, doc_src = _try_download_via_selectors(page, docx_selectors, 'docx')
+                doc_mime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+                is_docx = True
+
+                if not doc_io:
+                    doc_io, doc_src = _try_download_via_selectors(page, odt_selectors, 'odt')
+                    doc_mime = 'application/vnd.oasis.opendocument.text'
+                    is_docx = False
+
+                if doc_io:
+                    web_print(f"Parsiųstas dokumentas iš puslapio ({doc_src}), konvertuojama į PDF per Drive.")
+                    if is_docx and len(md_text) < 200:
+                        docx_md = extract_markdown_from_docx(doc_io)
+                        if docx_md:
+                            md_text = docx_md
+                    pdf_io = convert_doc_bytes_to_pdf_via_drive(doc_io, doc_mime, drive_service)
+
+        # 3 prioritetas: pilnas HTML puslapio PDF su CSS išplėtimu
+        if not pdf_io:
+            web_print("Naudojamas pilno puslapio HTML -> PDF spausdinimo režimas.")
+            pdf_io = _render_full_page_pdf(page)
+
+    except Exception as e:
+        web_print(f"\nKlaida apdorojant tinklalapį su Playwright: {e}")
+        return None, ""
+    finally:
+        if page is not None:
+            page.close()
+
+    return pdf_io, md_text
 
 
+# --- Google Drive operacijos ---
 def get_all_files_in_drive_folder(service, folder_id):
     """Gauna visus failus iš nurodyto aplanko vienu kartu."""
     files_dict = {}
@@ -181,18 +457,24 @@ def get_all_files_in_drive_folder(service, folder_id):
         web_print(f"\nKlaida gaunant visus failus iš Drive: {e}")
         return {}
 
+
 def upload_file_to_drive(service, folder_id, file_name, file_content_bytes, mime_type='application/pdf'):
+    file_content_bytes.seek(0)
     file_metadata = {'name': file_name, 'parents': [folder_id]}
     media = MediaIoBaseUpload(file_content_bytes, mimetype=mime_type, resumable=False)
     try:
-        file = service.files().create(body=file_metadata, media_body=media, fields='id', supportsAllDrives=True).execute()
+        file = service.files().create(
+            body=file_metadata, media_body=media, fields='id', supportsAllDrives=True
+        ).execute()
         web_print(f"\nFailas '{file_name}' sėkmingai įkeltas. ID: {file.get('id')}")
         return file.get('id')
     except Exception as e:
         web_print(f"\nKlaida įkeliant failą '{file_name}': {e}")
         return None
 
+
 def update_file_in_drive(service, file_id, new_file_content_bytes, mime_type='application/pdf'):
+    new_file_content_bytes.seek(0)
     media = MediaIoBaseUpload(new_file_content_bytes, mimetype=mime_type, resumable=True)
     try:
         service.files().update(fileId=file_id, media_body=media, supportsAllDrives=True).execute()
@@ -200,23 +482,28 @@ def update_file_in_drive(service, file_id, new_file_content_bytes, mime_type='ap
     except Exception as e:
         web_print(f"\nKlaida atnaujinant failą su ID '{file_id}': {e}")
 
+
 def download_file_content_from_drive(service, file_id):
     try:
         request = service.files().get_media(fileId=file_id)
         file_content = io.BytesIO()
         downloader = MediaIoBaseDownload(file_content, request)
         done = False
-        while not done: status, done = downloader.next_chunk()
+        while not done:
+            _, done = downloader.next_chunk()
         file_content.seek(0)
         return file_content
     except Exception as e:
         web_print(f"\nKlaida atsisiunčiant failo turinį iš Drive (ID: {file_id}): {e}")
         return None
 
+
 def extract_text_from_pdf(pdf_bytes_io):
     try:
+        pdf_bytes_io.seek(0)
         reader = PdfReader(pdf_bytes_io)
         text = "".join(page.extract_text() or "" for page in reader.pages)
+        pdf_bytes_io.seek(0)
         return text
     except Exception as e:
         web_print(f"\nKlaida išskiriant tekstą iš PDF: {e}")
@@ -233,21 +520,29 @@ def compare_texts_and_report_diff(old_text, new_text, file_name):
     dmp = diff_match_patch()
     diffs = dmp.diff_main(old_text, new_text)
     dmp.diff_cleanupSemantic(diffs)
-    has_changes = any(op != 0 for op, text in diffs)
-
-    # Generate HTML diff
+    has_changes = any(op != 0 for op, _ in diffs)
     html_diff = dmp.diff_prettyHtml(diffs)
 
     web_print(f"\n--- Pakeitimų ataskaita failui: {file_name} ---")
-    if has_changes: web_print("Rasti pakeitimai.")
-    else: web_print("Pakeitimų nerasta.")
+    if has_changes:
+        web_print("Rasti pakeitimai.")
+    else:
+        web_print("Pakeitimų nerasta.")
     web_print("------------------------------------------")
     return {"has_changes": has_changes, "html_diff": html_diff}
 
+
+def _sync_single_file_to_drive(drive_service, drive_files_cache, file_name, content_io, mime_type):
+    """Įkelia naują arba atnaujina esamą failą Google Drive aplanke. Grąžina (file_id, was_existing)."""
+    existing = drive_files_cache.get(file_name)
+    if existing:
+        update_file_in_drive(drive_service, existing['id'], content_io, mime_type=mime_type)
+        return existing['id'], True
+    new_id = upload_file_to_drive(drive_service, DRIVE_FOLDER_ID, file_name, content_io, mime_type=mime_type)
+    return new_id, False
+
+
 # --- Pagrindinė logika ---
-
-
-
 def main():
     try:
         _main_logic()
@@ -265,19 +560,16 @@ def main():
     finally:
         logger.q.put({"type": "done"})
 
-def _main_logic():
 
+def _main_logic():
     sheets_data = get_sheets_data()
     if not sheets_data:
         web_print("Nepavyko gauti duomenų iš Sheets.")
         return
 
     drive_service = get_drive_service()
-
-    # Pre-fetch all files to avoid N+1 API calls
     drive_files_cache = get_all_files_in_drive_folder(drive_service, DRIVE_FOLDER_ID)
 
-    # Filter valid rows
     valid_rows = [row for row in sheets_data if row and len(row) >= 2 and row[0].strip() and row[1].strip()]
     total_files = len(valid_rows)
     logger.progress(0, total_files)
@@ -285,26 +577,45 @@ def _main_logic():
     with sync_playwright() as p:
         browser = p.chromium.launch()
         for i, row in enumerate(valid_rows):
-            file_name = row[0].strip() + ".pdf"
+            base_name = row[0].strip()
+            pdf_file_name = f"{base_name}.pdf"
+            md_file_name = f"{base_name}.md"
             original_url = row[1].strip()
             url_lower = original_url.lower()
-            web_print(f"\n--- Apdirbamas failas: '{file_name}' ---")
+            web_print(f"\n--- Apdirbamas dokumentas: '{base_name}' ---")
 
-            new_file_content_bytes = None
+            new_pdf_bytes = None
+            new_md_text = ""
+
             if url_lower.endswith('.pdf') or '/format/iso_pdf/' in url_lower or '/txt/pdf/' in url_lower:
                 web_print("Aptikta tiesioginė PDF nuoroda.")
-                new_file_content_bytes = download_file_from_url_to_bytes(original_url)
+                new_pdf_bytes = download_file_from_url_to_bytes(original_url)
             elif url_lower.endswith(('.odt', '.docx')) or '/format/oo3_odt/' in url_lower:
                 web_print("Aptiktas ODT/DOCX dokumentas. Konvertuojama per Google Drive.")
-                new_file_content_bytes = convert_doc_to_pdf_via_drive(original_url, drive_service)
+                doc_bytes = download_file_from_url_to_bytes(original_url)
+                if doc_bytes:
+                    if url_lower.endswith('.docx'):
+                        source_mime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+                        new_md_text = extract_markdown_from_docx(doc_bytes)
+                    else:
+                        source_mime = 'application/vnd.oasis.opendocument.text'
+                    new_pdf_bytes = convert_doc_bytes_to_pdf_via_drive(doc_bytes, source_mime, drive_service)
             else:
-                web_print("Neaiški nuoroda, manoma, kad tai HTML. Konvertuojama su Playwright.")
-                new_file_content_bytes = convert_html_to_pdf_bytes_playwright(original_url, browser)
+                web_print("Tinklalapio nuoroda. Apdorojama su Playwright.")
+                new_pdf_bytes, new_md_text = process_web_page_playwright(
+                    original_url, browser, drive_service=drive_service, prefer_native=True
+                )
 
-            if not new_file_content_bytes:
-                web_print(f"\nNepavyko gauti '{file_name}' turinio. Failas praleidžiamas.")
+            # Atsarginis Markdown generavimas iš PDF teksto
+            if new_pdf_bytes and len(new_md_text.strip()) < 50:
+                extracted_pdf_text = extract_text_from_pdf(new_pdf_bytes)
+                if extracted_pdf_text:
+                    new_md_text = text_to_markdown(extracted_pdf_text)
+
+            if not new_pdf_bytes and not new_md_text:
+                web_print(f"\nNepavyko gauti '{base_name}' turinio. Praleidžiama.")
                 logger.add_result({
-                    "file_name": file_name,
+                    "file_name": pdf_file_name,
                     "status": "error",
                     "message": "Nepavyko gauti turinio",
                     "link": original_url,
@@ -313,43 +624,45 @@ def _main_logic():
                 logger.progress(i + 1, total_files)
                 continue
 
-            existing_file = drive_files_cache.get(file_name)
-
+            existing_pdf = drive_files_cache.get(pdf_file_name)
+            existing_md = drive_files_cache.get(md_file_name)
             diff_info = None
 
-            if existing_file:
-                old_file_content_bytes = download_file_content_from_drive(drive_service, existing_file['id'])
-                if old_file_content_bytes:
-                    old_text = extract_text_from_pdf(old_file_content_bytes)
-                    new_text = extract_text_from_pdf(new_file_content_bytes)
-                    new_file_content_bytes.seek(0)
+            # Pakeitimų paieška (pirmenybė švariam .md tekstui, atsarginis – .pdf)
+            if existing_md and new_md_text:
+                old_md_io = download_file_content_from_drive(drive_service, existing_md['id'])
+                if old_md_io:
+                    old_md_text = old_md_io.read().decode('utf-8', errors='replace')
+                    diff_info = compare_texts_and_report_diff(old_md_text, new_md_text, md_file_name)
+            elif existing_pdf and new_pdf_bytes:
+                old_pdf_io = download_file_content_from_drive(drive_service, existing_pdf['id'])
+                if old_pdf_io:
+                    old_pdf_text = extract_text_from_pdf(old_pdf_io)
+                    new_pdf_text = extract_text_from_pdf(new_pdf_bytes)
+                    diff_info = compare_texts_and_report_diff(old_pdf_text, new_pdf_text, pdf_file_name)
 
-                    diff_info = compare_texts_and_report_diff(old_text, new_text, file_name)
+            # Išsaugome .md failą Open WebUI žinių bazei
+            if new_md_text:
+                md_io = io.BytesIO(new_md_text.encode('utf-8'))
+                _sync_single_file_to_drive(
+                    drive_service, drive_files_cache, md_file_name, md_io, mime_type='text/markdown'
+                )
 
-                    web_print(f"\nAtnaujinamas failas '{file_name}'...")
-                    update_file_in_drive(drive_service, existing_file['id'], new_file_content_bytes)
-
-                    logger.add_result({
-                        "file_name": file_name,
-                        "status": "updated",
-                        "link": f"https://drive.google.com/file/d/{existing_file['id']}/view",
-                        "diff": diff_info,
-                        "original_url": original_url
-                    })
-            else:
-                web_print(f"\nFailas '{file_name}' nerastas Drive. Įkeliama nauja versija.")
-                new_file_id = upload_file_to_drive(drive_service, DRIVE_FOLDER_ID, file_name, new_file_content_bytes)
-                link = f"https://drive.google.com/file/d/{new_file_id}/view" if new_file_id else None
+            # Išsaugome .pdf failą
+            if new_pdf_bytes:
+                pdf_id, was_updated = _sync_single_file_to_drive(
+                    drive_service, drive_files_cache, pdf_file_name, new_pdf_bytes, mime_type='application/pdf'
+                )
+                link = f"https://drive.google.com/file/d/{pdf_id}/view" if pdf_id else None
                 logger.add_result({
-                    "file_name": file_name,
-                    "status": "new",
+                    "file_name": pdf_file_name,
+                    "status": "updated" if was_updated else "new",
                     "link": link,
-                    "diff": None,
+                    "diff": diff_info,
                     "original_url": original_url
                 })
 
             logger.progress(i + 1, total_files)
-
 
         browser.close()
 
@@ -357,6 +670,7 @@ def _main_logic():
 def run_update_thread():
     thread = threading.Thread(target=main)
     thread.start()
+
 
 if __name__ == '__main__':
     main()
