@@ -41,6 +41,7 @@ import TA_update_web
 class TestTAUpdateWeb(unittest.TestCase):
     def setUp(self):
         TA_update_web.logger = TA_update_web.WebLogger()
+        TA_update_web.stop_event.clear()
 
     @patch('builtins.print')
     def test_web_print(self, mock_print):
@@ -60,6 +61,17 @@ class TestTAUpdateWeb(unittest.TestCase):
         self.assertIn(result_data, TA_update_web.logger.results)
         item = TA_update_web.logger.q.get_nowait()
         self.assertEqual(item, {"type": "result", "data": result_data})
+
+    def test_request_stop_sets_event(self):
+        self.assertFalse(TA_update_web.stop_event.is_set())
+        TA_update_web.request_stop()
+        self.assertTrue(TA_update_web.stop_event.is_set())
+
+    def test_cloudflare_block_detection(self):
+        blocked_html = "<html><title>Attention Required! | Cloudflare</title><body>Sorry, you have been blocked</body></html>"
+        normal_html = "<html><title>Teisės aktas</title><body><p>Straipsnis 1.</p></body></html>"
+        self.assertTrue(TA_update_web._is_cloudflare_blocked(blocked_html))
+        self.assertFalse(TA_update_web._is_cloudflare_blocked(normal_html))
 
     def test_download_rejects_empty_waf_response(self):
         mock_resp = MagicMock()
@@ -96,6 +108,7 @@ class TestTAUpdateWeb(unittest.TestCase):
         mock_page = MagicMock()
         mock_browser.new_page.return_value = mock_page
         mock_page.content.return_value = "<html><body><main>Testas</main></body></html>"
+        mock_page.title.return_value = "Testas"
         mock_page.pdf.return_value = b"fake pdf bytes"
 
         url = "http://example.com"
@@ -103,7 +116,7 @@ class TestTAUpdateWeb(unittest.TestCase):
 
         self.assertIsInstance(result, io.BytesIO)
         self.assertEqual(result.getvalue(), b"fake pdf bytes")
-        mock_page.goto.assert_called_once_with(url, wait_until='domcontentloaded', timeout=60000)
+        mock_page.goto.assert_called_once_with(url, wait_until='domcontentloaded', timeout=45000)
         mock_page.add_style_tag.assert_called_once()
         mock_page.pdf.assert_called_once()
         mock_page.close.assert_called_once()
@@ -118,6 +131,7 @@ class TestTAUpdateWeb(unittest.TestCase):
             "<html><body><main><h1>Įstatymas</h1>"
             "<p>" + ("Tekstas " * 50) + "</p></main></body></html>"
         )
+        mock_page.title.return_value = "Įstatymas"
 
         mock_locator = MagicMock()
         mock_locator.count.return_value = 1
