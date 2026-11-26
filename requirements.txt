@@ -11,3 +11,6 @@ playwright
 requests
 apscheduler==3.10.4
 httpx
+beautifulsoup4
+markdownify
+python-docx
