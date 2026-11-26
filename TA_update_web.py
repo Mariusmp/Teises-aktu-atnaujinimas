@@ -2,7 +2,6 @@ import io
 import os
 import re
 import queue
-import tempfile
 import threading
 from urllib.parse import urljoin
 
@@ -61,7 +60,7 @@ if not DRIVE_FOLDER_ID:
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 )
 
 
@@ -180,15 +179,88 @@ def text_to_markdown(raw_text):
 
 
 # --- Atsisiuntimo ir PDF konvertavimo funkcijos ---
-def download_file_from_url_to_bytes(url):
-    headers = {'User-Agent': USER_AGENT}
+def _new_stealth_page(browser):
+    page = browser.new_page(viewport={"width": 1280, "height": 900}, accept_downloads=True)
+    page.set_extra_http_headers({
+        "User-Agent": USER_AGENT,
+        "Accept-Language": "lt-LT,lt;q=0.9,en-US;q=0.8,en;q=0.7"
+    })
+    page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
+    return page
+
+
+def download_file_from_url_to_bytes(url, expect_pdf=False):
+    headers = {
+        'User-Agent': USER_AGENT,
+        'Accept': 'application/pdf,application/octet-stream,*/*;q=0.8',
+        'Accept-Language': 'lt-LT,lt;q=0.9,en-US;q=0.8,en;q=0.7',
+    }
     try:
         response = requests.get(url, stream=True, headers=headers, timeout=30)
         response.raise_for_status()
-        return io.BytesIO(response.content)
+        content = response.content
+
+        # HTTP 202 arba tuščias atsakas reiškia WAF JS patikrą (pvz., EUR-Lex)
+        if response.status_code == 202 or not content or len(content) < 100:
+            web_print(f"Gautas tuščias arba WAF atsakas (HTTP {response.status_code}, {len(content)} B) iš {url}")
+            return None
+
+        if expect_pdf and not content.startswith(b'%PDF'):
+            web_print(f"Atsisiųstas turinys iš {url} nėra PDF formato.")
+            return None
+
+        return io.BytesIO(content)
     except requests.exceptions.RequestException as e:
         web_print(f"\nKlaida atsisiunčiant failą iš URL {url}: {e}")
         return None
+
+
+def download_pdf_via_playwright(url, browser):
+    """Parsiunčia tiesioginį PDF per Playwright (įveikia AWS WAF / JS patikras, pvz., EUR-Lex)."""
+    web_print(f"Bandoma parsiųsti PDF per Playwright naršyklę: {url}")
+    page = None
+    downloads = []
+    try:
+        page = _new_stealth_page(browser)
+        page.on("download", lambda d: downloads.append(d))
+
+        try:
+            page.goto(url, wait_until='domcontentloaded', timeout=60000)
+        except Exception:
+            # Chromium išmeta ERR_ABORTED, kai nuoroda iškart pradeda failo atsisiuntimą
+            pass
+
+        for _ in range(30):
+            if downloads:
+                tmp_path = downloads[0].path()
+                if tmp_path and os.path.exists(tmp_path):
+                    with open(tmp_path, 'rb') as f:
+                        data = f.read()
+                    if data.startswith(b'%PDF'):
+                        web_print("PDF sėkmingai parsiųstas per Playwright download.")
+                        return io.BytesIO(data)
+
+            try:
+                html_now = page.content()
+                if 'AwsWafIntegration' not in html_now and 'challenge-platform' not in html_now:
+                    resp = page.request.get(page.url, timeout=30000)
+                    if resp.ok:
+                        body = resp.body()
+                        if body.startswith(b'%PDF'):
+                            web_print("PDF sėkmingai parsiųstas per Playwright sesiją.")
+                            return io.BytesIO(body)
+            except Exception:
+                pass
+
+            page.wait_for_timeout(500)
+
+        return None
+    except Exception as e:
+        web_print(f"\nKlaida siunčiant PDF su Playwright: {e}")
+        return None
+    finally:
+        if page is not None:
+            page.close()
 
 
 def convert_doc_bytes_to_pdf_via_drive(doc_content, source_mimetype, drive_service):
@@ -348,18 +420,25 @@ def process_web_page_playwright(url, browser, drive_service=None, prefer_native=
     page = None
 
     try:
-        page = browser.new_page(viewport={"width": 1280, "height": 900}, accept_downloads=True)
-        page.set_extra_http_headers({"User-Agent": USER_AGENT})
-        page.goto(url, wait_until='networkidle', timeout=60000)
+        page = _new_stealth_page(browser)
+        # Naudojame domcontentloaded, nes e-seimas.lrs.lt laiko atviras fonines užklausas ir stringa ties networkidle
+        page.goto(url, wait_until='domcontentloaded', timeout=60000)
 
+        try:
+            page.wait_for_selector(
+                '#documentContent, .document-content, .act-content, a[href*="pdf" i], a[href*="docx" i]',
+                timeout=15000
+            )
+        except Exception:
+            pass
+
+        page.wait_for_timeout(2000)
         page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
-        page.wait_for_load_state('networkidle')
+        page.wait_for_timeout(1000)
 
-        # Ištraukiame švarų Markdown iš puslapio HTML
         md_text = extract_markdown_from_html(page.content())
 
         if prefer_native:
-            # 1 prioritetas: tikras PDF atsisiuntimo mygtukas puslapyje
             pdf_selectors = [
                 'a[href*=".pdf" i]',
                 'a[href*="format=pdf" i]',
@@ -375,7 +454,6 @@ def process_web_page_playwright(url, browser, drive_service=None, prefer_native=
             if pdf_io:
                 web_print(f"Parsiųstas tikras daugiapuslapis PDF iš puslapio ({pdf_src}).")
 
-            # 2 prioritetas: DOCX arba ODT mygtukas puslapyje (pvz., e-seimas projektai)
             if not pdf_io and drive_service:
                 docx_selectors = [
                     'a[href*=".docx" i]',
@@ -414,7 +492,6 @@ def process_web_page_playwright(url, browser, drive_service=None, prefer_native=
                             md_text = docx_md
                     pdf_io = convert_doc_bytes_to_pdf_via_drive(doc_io, doc_mime, drive_service)
 
-        # 3 prioritetas: pilnas HTML puslapio PDF su CSS išplėtimu
         if not pdf_io:
             web_print("Naudojamas pilno puslapio HTML -> PDF spausdinimo režimas.")
             pdf_io = _render_full_page_pdf(page)
@@ -501,6 +578,8 @@ def download_file_content_from_drive(service, file_id):
 def extract_text_from_pdf(pdf_bytes_io):
     try:
         pdf_bytes_io.seek(0)
+        if pdf_bytes_io.getbuffer().nbytes == 0:
+            return None
         reader = PdfReader(pdf_bytes_io)
         text = "".join(page.extract_text() or "" for page in reader.pages)
         pdf_bytes_io.seek(0)
@@ -575,7 +654,7 @@ def _main_logic():
     logger.progress(0, total_files)
 
     with sync_playwright() as p:
-        browser = p.chromium.launch()
+        browser = p.chromium.launch(args=["--disable-blink-features=AutomationControlled"])
         for i, row in enumerate(valid_rows):
             base_name = row[0].strip()
             pdf_file_name = f"{base_name}.pdf"
@@ -589,7 +668,9 @@ def _main_logic():
 
             if url_lower.endswith('.pdf') or '/format/iso_pdf/' in url_lower or '/txt/pdf/' in url_lower:
                 web_print("Aptikta tiesioginė PDF nuoroda.")
-                new_pdf_bytes = download_file_from_url_to_bytes(original_url)
+                new_pdf_bytes = download_file_from_url_to_bytes(original_url, expect_pdf=True)
+                if not new_pdf_bytes:
+                    new_pdf_bytes = download_pdf_via_playwright(original_url, browser)
             elif url_lower.endswith(('.odt', '.docx')) or '/format/oo3_odt/' in url_lower:
                 web_print("Aptiktas ODT/DOCX dokumentas. Konvertuojama per Google Drive.")
                 doc_bytes = download_file_from_url_to_bytes(original_url)
