@@ -19,6 +19,22 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set up Python and run isolated unit tests
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install lightweight test dependencies
+        run: |
+          pip install beautifulsoup4 markdownify
+
+      - name: Run unit tests in isolated processes
+        run: |
+          for test_file in test_*.py; do
+            echo "Running $test_file..."
+            python3 -m unittest "$test_file" -v || exit 1
+          done
+
       - name: Downcase IMAGE_NAME
         run: |
           echo "IMAGE_NAME_LOWER=$(echo '${{ env.IMAGE_NAME }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
