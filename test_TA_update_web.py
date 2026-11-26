@@ -3,9 +3,7 @@ import os
 import unittest
 from unittest.mock import MagicMock, patch
 import io
-import queue
 
-# Set environment variables required by TA_update_web
 os.environ['SPREADSHEET_ID'] = 'test_spreadsheet_id'
 os.environ['DRIVE_FOLDER_ID'] = 'test_drive_folder_id'
 os.environ['RANGE_NAME'] = 'test_range_name'
@@ -19,7 +17,6 @@ requests_mock = MagicMock()
 requests_mock.exceptions.RequestException = MockRequestException
 sys.modules['requests'] = requests_mock
 
-# Mocks external dependencies
 sys.modules['google'] = MagicMock()
 sys.modules['google.auth'] = MagicMock()
 sys.modules['google.auth.transport'] = MagicMock()
@@ -64,6 +61,15 @@ class TestTAUpdateWeb(unittest.TestCase):
         item = TA_update_web.logger.q.get_nowait()
         self.assertEqual(item, {"type": "result", "data": result_data})
 
+    def test_download_rejects_empty_waf_response(self):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 202
+        mock_resp.content = b""
+        TA_update_web.requests.get.return_value = mock_resp
+
+        result = TA_update_web.download_file_from_url_to_bytes("https://eur-lex.europa.eu/test.pdf", expect_pdf=True)
+        self.assertIsNone(result)
+
     def test_extract_markdown_from_html_strips_navigation(self):
         sample_html = """
         <html>
@@ -97,7 +103,7 @@ class TestTAUpdateWeb(unittest.TestCase):
 
         self.assertIsInstance(result, io.BytesIO)
         self.assertEqual(result.getvalue(), b"fake pdf bytes")
-        mock_page.goto.assert_called_once_with(url, wait_until='networkidle', timeout=60000)
+        mock_page.goto.assert_called_once_with(url, wait_until='domcontentloaded', timeout=60000)
         mock_page.add_style_tag.assert_called_once()
         mock_page.pdf.assert_called_once()
         mock_page.close.assert_called_once()
